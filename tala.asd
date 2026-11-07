@@ -9,5 +9,6 @@
  :around-compile "gendl-asdf:around-compile" :components
  ((:file "source/package") (:file "source/dual")
   (:file "source/math") (:file "source/devices")
-  (:file "source/engine") (:file "source/song") (:file "source/hear")
-  (:file "source/api") (:file "source/web") (:file "source/prompt")))
+  (:file "source/engine") (:file "source/samples")
+  (:file "source/song") (:file "source/hear") (:file "source/api")
+  (:file "source/web") (:file "source/prompt")))

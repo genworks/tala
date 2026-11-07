@@ -345,6 +345,138 @@ of each sample as a float32, mixed."
                     do (when (> power most) (setf most power best k))
                     finally (return best)))))))
 
+(defun speech-like (seconds &optional (stereo nil))
+  "Float32 octets of three bursts of tone with silence between, as a
+voice has phrases: (values octets channels)."
+  (let* ((frames (round (* seconds 48000)))
+         (data (make-array (* frames (if stereo 2 1)) :element-type 'single-float :initial-element 0f0)))
+    (dotimes (i frames)
+      (let* ((at (/ i 48000d0))
+             (in-burst (some (lambda (b) (<= (first b) at (second b))) '((0.1d0 0.5d0) (0.9d0 1.2d0) (1.6d0 1.9d0)))))
+        (when in-burst
+          (let ((x (coerce (* 0.5d0 (sin (* 2 pi 220 at))) 'single-float)))
+            (setf (aref data i) x)
+            (when stereo (setf (aref data (+ frames i)) (* 0.5f0 x)))))))
+    (values (floats-octets data) (if stereo 2 1))))
+
+(defun song-with-sample (&optional stereo)
+  (let ((song (make-song)))
+    (multiple-value-bind (octets channels) (speech-like 2 stereo)
+      (let ((*song* song))
+        (import-sample! song "Voice" octets channels)))
+    (forms-pass? song "(set-tempo 120) (add-track \"Speech\" :instrument :sampler)")
+    song))
+
+(defun test-samples ()
+  (check "floats survive the wire, to the bit"
+    (let* ((data (make-array 5 :element-type 'single-float
+                               :initial-contents '(0f0 -1f0 0.1f0 1f-30 3.25f0)))
+           (back (octets-floats (floats-octets data))))
+      (equalp data back)))
+  (check "one sound is one copy, whatever it is called"
+    (let ((octets (speech-like 0.1)))
+      (string= (store-pcm! octets 1) (store-pcm! (copy-seq octets) 1))))
+  (check "a stamp says what the sound is"
+    (let ((a (make-array 8 :element-type '(unsigned-byte 8) :initial-element 0))
+          (b (make-array 8 :element-type '(unsigned-byte 8) :initial-element 0)))
+      (setf (aref b 7) 1)
+      (not (string= (store-pcm! a 1) (store-pcm! b 1)))))
+  (check "bytes that are not whole frames are refused"
+    (handler-case (progn (store-pcm! (make-array 6 :element-type '(unsigned-byte 8) :initial-element 0) 1) nil)
+      (error () t)))
+  (let ((song (song-with-sample)))
+    (check "importing leaves the spec small: it names the audio"
+      (< (length (song-text song)) 1000))
+    (check "phrases are found where the sound is"
+      (let ((phrases (getf (let ((*song* song)) (tala-api::sample-info "Voice")) :phrases)))
+        (and (= 3 (length phrases))
+             (< (abs (- 0.1 (first (first phrases)))) 0.05)
+             (< (abs (- 1.9 (second (third phrases)))) 0.05))))
+    (check "an audio clip runs to the sample's end, in beats"
+      (progn
+        (forms-pass? song "(add-audio-clip \"Speech\" \"Voice\" :start 2)")
+        (= 4 (getf (first (getf (first (getf (the-object song spec) :tracks)) :clips)) :length))))
+    (check "and plays where it was put"
+      (let ((left (render-song song (* 3 48000))))
+        ;; beat 2 is 1 s; the first burst starts 0.1 s into the sample
+        (and (< (peak-of (subseq left 0 48000)) 1d-6)
+             (> (peak-of (subseq left 53000 72000)) 0.3d0))))
+    (check "at the sample's own frames"
+      (let ((left (render-song song (* 3 48000)))
+            (pool (pool-for (getf (the-object song spec) :samples))))
+        ;; well inside the clip, fade done, unity gain: the limiter is idle
+        (< (abs (- (aref left (+ 48000 12000)) (float (aref pool 12000) 1d0))) 1d-4)))
+    (check "a clip's offset moves into the sample"
+      (let ((song (song-with-sample)))
+        (forms-pass? song "(add-audio-clip \"Speech\" \"Voice\" :start 0 :offset 0.9 :length 1)")
+        (let ((left (render-song song 24000)))
+          (> (peak-of (subseq left 1000 12000)) 0.3d0))))
+    (check "transposing an octave down plays it at half speed"
+      (let ((song (song-with-sample)))
+        (forms-pass? song "(add-audio-clip \"Speech\" \"Voice\" :start 0 :transpose -12)")
+        (and (= 8 (getf (first (getf (first (getf (the-object song spec) :tracks)) :clips)) :length))
+             (let ((left (render-song song (* 2 48000))))
+               ;; the first burst, 0.1 to 0.5 s of the sample, now 0.2 to 1 s
+               (and (< (peak-of (subseq left 0 8000)) 1d-6)
+                    (> (peak-of (subseq left 12000 46000)) 0.3d0))))))
+    (check "playing from inside a clip starts inside it"
+      (let ((song (song-with-sample)))
+        (forms-pass? song "(add-audio-clip \"Speech\" \"Voice\" :start 0)")
+        (let ((left (render-song song 12000 :from 2)))
+          ;; beat 2 is second 1: inside the second burst
+          (> (peak-of left) 0.3d0))))
+    (check "stereo samples stay stereo"
+      (let ((song (song-with-sample t)))
+        (forms-pass? song "(add-audio-clip \"Speech\" \"Voice\")")
+        (multiple-value-bind (left right) (render-song song 24000)
+          (> (peak-of left) (* 1.5 (peak-of right))))))
+    (check "a clip is cut at its length, and fades"
+      (let ((song (song-with-sample)))
+        (forms-pass? song "(add-audio-clip \"Speech\" \"Voice\" :length 0.5)")
+        (let ((left (render-song song 48000)))
+          (< (peak-of (subseq left 13000 48000)) 1d-6))))
+    (check "a sample does not touch the plan or the program"
+      (let* ((song (song-with-sample))
+             (plan (the-object song plan)))
+        (render-song song 480)
+        (let ((builds (copy-list *builds*)))
+          (let ((*song* song))
+            (import-sample! song "Second" (speech-like 0.2) 1))
+          (forms-pass? song "(add-audio-clip \"Speech\" \"Second\" :start 1) (set-clip \"Speech\" \"Second\" :gain -6 :transpose 2)")
+          (render-song song 480)
+          (and (equal plan (the-object song plan)) (equal builds *builds*)))))
+    (check "a sample's words reach the model's description"
+      (let ((song (song-with-sample)))
+        (forms-pass? song "(set-sample \"Voice\" :words \"we came from the stars\")")
+        (search "we came from the stars" (let ((*song* song)) (tala-api::describe-song)))))
+    (check "a sample in use cannot be deleted"
+      (let ((song (song-with-sample)))
+        (forms-pass? song "(add-audio-clip \"Speech\" \"Voice\")")
+        (search "still use" (form-error song "(delete-sample \"Voice\")"))))
+    (check "notes do not go on an audio track, nor audio on a synth"
+      (let ((song (song-with-sample)))
+        (forms-pass? song "(add-track \"Synth\")")
+        (and (search "add-audio-clip" (form-error song "(add-clip \"Speech\")"))
+             (search "audio track" (form-error song "(add-audio-clip \"Synth\" \"Voice\")")))))
+    (check "a sample whose audio is gone is silence, not a failure"
+      (let ((song (song-with-sample)))
+        (forms-pass? song "(add-audio-clip \"Speech\" \"Voice\")")
+        (let ((spec (copy-tree (the-object song spec))))
+          (put! (first (getf spec :samples)) :stamp "1-gone-0")
+          (let ((lost (make-song spec)))
+            (and (< (peak-of (render-song lost 24000)) 1d-9)
+                 (search "\"missing\":true" (json-text (song-json lost))))))))))
+
+(defun test-agent-survives-reload ()
+  (check "a reload keeps where the agent was pointed"
+    (let ((saved (sexp-agent:agent-messages-url *agent*)))
+      (unwind-protect
+           (progn
+             (configure-agent! :messages-url "http://example.invalid/gate")
+             (load (merge-pathnames "source/prompt.lisp" (tala-dir)))
+             (equal "http://example.invalid/gate" (sexp-agent:agent-messages-url *agent*)))
+        (configure-agent! :messages-url saved)))))
+
 (defun test-json ()
   (check "a double reaches the page exactly"
     (let ((text (json-text (list 0.1d0 1d-7 145 (/ 1d0 3d0)))))
@@ -393,6 +525,27 @@ had go to a function FN is called with."
               table)))
     (unwind-protect (funcall fn (lambda () (reverse requests)))
       (setf (fdefinition 'sexp-agent::call) saved))))
+
+(defun test-reading-reaches-the-model ()
+  (let* ((song (song-with-sample))
+         (session (make-session "reading" song)))
+    (call-with-stub-model
+     (list (format nil "Reading it.~%```lisp~%(sample-info \"Voice\")~%```")
+           (format nil "Done.~%```lisp~%```"))
+     (lambda (requests)
+       (let ((result (prompt-song session "Cut the first phrase")))
+         (check "a reading operation's answer reaches the model"
+           (let ((follow-up (first (last (second (funcall requests))))))
+             (search ":phrases ((0.1 0.5)"
+                     (with-output-to-string (out)
+                       (labels ((walk (x)
+                                  (cond ((stringp x) (write-string x out))
+                                        ((hash-table-p x) (maphash (lambda (k v) (declare (ignore k)) (walk v)) x))
+                                        ((consp x) (mapc #'walk x))
+                                        ((vectorp x) (map nil #'walk x)))))
+                         (walk follow-up))))))
+         (check "and is no spectrogram on the page"
+           (null (getf result :heard))))))))
 
 (defun test-prompt ()
   (let* ((session (make-session "test" (make-song)))
@@ -465,9 +618,12 @@ change: (record-golden).")
   (test-plan-and-parameters)
   (test-render)
   (test-hearing)
+  (test-samples)
+  (test-agent-survives-reload)
   (test-json)
   (test-reference)
   (test-prompt)
+  (test-reading-reaches-the-model)
   (test-golden)
   (let ((failed (remove-if #'cdr *checks*)))
     (values (reverse (mapcar #'car failed)) (length *checks*))))

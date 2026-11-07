@@ -38,6 +38,9 @@
 ;; a clip: (:id 3 :name "Bass" :start 0 :length 16 :loop 4 :notes
 ;; ((pitch start length velocity)...)), beats throughout, the notes
 ;; repeating every LOOP beats;
+;; an audio clip has :sample id :offset seconds :gain dB :transpose
+;; semitones in place of notes, on a track whose instrument is :sampler;
+;; the song's :samples are (:id :name :stamp :frames :channels :words);
 ;; a lane: (:device 2 :param :cutoff :points ((beat value)...)), with
 ;; :device nil and :param :gain or :pan for the track's own fader.
 ;;
@@ -46,7 +49,7 @@
   "A new song: nothing but a limiter on the master."
   (list :name name :tempo 120 :numerator 4 :denominator 4
         :loop-on t :loop-start 0 :loop-end 16 :next-id 3
-        :tracks nil :returns nil
+        :samples nil :tracks nil :returns nil
         :master (list :id 1 :name "Master" :color 0 :gain 0 :pan 0 :devices
                       (list (list :id 2 :kind :limiter :on t :values nil)))))
 
@@ -105,20 +108,24 @@ the control's range is held at the end, as a knob is."
    (repeat (let ((loop-length (getf (the spec) :loop)))
              (if (and loop-length (plusp loop-length)) loop-length (the clip-length))))
    (events
-    ;; the notes as the timeline hears them: (beat length pitch velocity)
-    (let ((out '()))
-      (loop for pass from 0
-            for offset = (* pass (the repeat))
-            while (< offset (the clip-length))
-            do (dolist (note (getf (the spec) :notes))
-                 (destructuring-bind (pitch start length velocity) note
-                   (let ((at (+ offset start)))
-                     (when (and (< at (the clip-length)) (< start (the repeat)))
-                       (push (list (+ (the start) at)
-                                   (min length (- (the clip-length) at))
-                                   pitch velocity)
-                             out))))))
-      (nreverse out)))))
+    ;; the notes as the timeline hears them: (beat length pitch velocity);
+    ;; an audio clip is one event with its id for a pitch, which the
+    ;; score turns into its region's number
+    (if (getf (the spec) :sample)
+        (list (list (the start) (the clip-length) (the clip-id) 127))
+        (let ((out '()))
+          (loop for pass from 0
+                for offset = (* pass (the repeat))
+                while (< offset (the clip-length))
+                do (dolist (note (getf (the spec) :notes))
+                     (destructuring-bind (pitch start length velocity) note
+                       (let ((at (+ offset start)))
+                         (when (and (< at (the clip-length)) (< start (the repeat)))
+                           (push (list (+ (the start) at)
+                                       (min length (- (the clip-length) at))
+                                       pitch velocity)
+                                 out))))))
+          (nreverse out))))))
 
 (define-object track (base-object)
   :input-slots
@@ -243,13 +250,41 @@ the control's range is held at the end, as a knob is."
              (position key (device-params (getf spec :kind)) :key #'param-key)))
         (+ (getf placed-track :param) (ecase key (:gain tp-gain) (:pan tp-pan))))))
 
+(defun clip-region (clip samples layout sr)
+  "The six numbers of the audio CLIP's region."
+  (let* ((sample (find (getf clip :sample) samples :key (lambda (s) (getf s :id))))
+         (row (assoc (getf sample :id) layout))
+         (frames (or (fourth row) 0))
+         (start (min frames (round (* (getf clip :offset 0) sr)))))
+    (list (or (second row) 0) (or (third row) 0) start frames
+          (d-exp2 (/ (float (getf clip :transpose 0) 1d0) 12d0))
+          (db-gain (float (getf clip :gain 0) 1d0)))))
+
+(defun audio-events (track samples layout regions sr)
+  "TRACK's events with each audio clip's id turned into the number of
+its region, which is pushed on REGIONS, a cons holding the list."
+  (let ((clips (getf (the-object track spec) :clips)))
+    (mapcar (lambda (event)
+              (destructuring-bind (beat length id velocity) event
+                (let ((clip (find id clips :key (lambda (c) (getf c :id)))))
+                  (push (clip-region clip samples layout sr) (car regions))
+                  (list beat length (1- (length (car regions))) velocity))))
+            (the-object track events))))
+
 (defun song-score (song)
-  "The score array for SONG: its notes and automation, as the engine
-reads them (engine.lisp)."
+  "The score array for SONG: its notes, automation and audio regions,
+as the engine reads them (engine.lisp)."
   (let* ((tracks (list-elements (the-object song tracks)))
-         (events (mapcar (lambda (track) (the-object track events)) tracks))
+         (samples (getf (the-object song spec) :samples))
+         (layout (pool-layout samples))
+         (regions (list nil))
+         (events (mapcar (lambda (track)
+                           (if (eq (getf (the-object track instrument-spec) :kind) :sampler)
+                               (audio-events track samples layout regions *sample-rate*)
+                               (the-object track events)))
+                         tracks))
          (placed (plan-layout (the-object song plan) 48000))
-         (head (+ 2 (* 2 (length tracks))))
+         (head (+ 3 (* 2 (length tracks))))
          (note-frames (reduce #'+ (mapcar #'length events)))
          (lanes (loop for track in (the-object song all-tracks)
                       for place in placed
@@ -258,15 +293,17 @@ reads them (engine.lisp)."
                                      collect (cons (lane-index song (the-object track spec) lane place)
                                                    (lane-numbers track lane)))))
          (lanes-at (+ head (* 4 note-frames)))
-         (size (+ lanes-at 1 (reduce #'+ (mapcar (lambda (l) (+ 2 (* 2 (length (cdr l))))) lanes))))
-         (out (double-buffer size))
+         (regions-at (+ lanes-at 1 (reduce #'+ (mapcar (lambda (l) (+ 2 (* 2 (length (cdr l))))) lanes))))
+         (rows (reverse (car regions)))
+         (out (double-buffer (+ regions-at (* 6 (length rows)))))
          (at head))
     (setf (aref out 0) (float (length tracks) 1d0)
-          (aref out 1) (float lanes-at 1d0))
+          (aref out 1) (float lanes-at 1d0)
+          (aref out 2) (float regions-at 1d0))
     (loop for list in events
           for i from 0
-          do (setf (aref out (+ 2 (* 2 i))) (float at 1d0)
-                   (aref out (+ 3 (* 2 i))) (float (length list) 1d0))
+          do (setf (aref out (+ 3 (* 2 i))) (float at 1d0)
+                   (aref out (+ 4 (* 2 i))) (float (length list) 1d0))
              (dolist (event list)
                (dolist (x event)
                  (setf (aref out at) (float x 1d0))
@@ -282,6 +319,10 @@ reads them (engine.lisp)."
         (setf (aref out at) (float (first point) 1d0)
               (aref out (1+ at)) (float (second point) 1d0))
         (incf at 2)))
+    (dolist (row rows)
+      (dolist (x row)
+        (setf (aref out at) (float x 1d0))
+        (incf at)))
     out))
 
 (defun lane-numbers (track lane)
@@ -364,7 +405,8 @@ else, as SETF of GETF would not do for a new key."
 (defun render-song (song frames &key (sr 48000) (from 0) block-size)
   "FRAMES frames of SONG from beat FROM: (values left right)."
   (render-plan (the-object song plan) (the-object song params) (the-object song score) frames
-               :sr sr :from from :block-size (or block-size frames)))
+               :sr sr :from from :block-size (or block-size frames)
+               :pool (pool-for (getf (the-object song spec) :samples))))
 
 (defun song-text (song)
   "SONG's spec as the text of a .tala file."

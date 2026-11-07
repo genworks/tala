@@ -25,9 +25,11 @@
 ;; PLAN-LAYOUT.  Nothing allocates while it runs, which on the audio
 ;; thread is the difference between sound and a dropout.
 ;;
-;; The score, SC: [tracks, offset of the lanes, then for each track its
-;; offset and count, the notes (beat length pitch velocity), then the
-;; lanes: count, and each lane's parameter index, count, (beat value)...]
+;; The score, SC: [tracks, offset of the lanes, offset of the regions,
+;; then for each track its offset and count, the notes (beat length
+;; pitch velocity), then the lanes: count, and each lane's parameter
+;; index, count, (beat value)..., then the regions, six numbers each
+;; (devices.lisp).  POOL is the song's recorded sound (samples.lisp).
 ;;
 
 (define-slots tr bus-l bus-r gl gr cl cr ready peak idx out-l out-r send0 send1 send2 send3 send4 send5 send6 send7)
@@ -77,8 +79,8 @@ resamples for the device, if it must, after the engine.")
 
 (define-dsp seq-seek ((s :buf) (sc :buf) (b :int) (ti :int)) :nil
   "Track TI's next note: the first at or after the seek beat."
-  (let* ((o (ifloor (aref sc (+ 2 (* 2 ti)))))
-         (n (ifloor (aref sc (+ 3 (* 2 ti)))))
+  (let* ((o (ifloor (aref sc (+ 3 (* 2 ti)))))
+         (n (ifloor (aref sc (+ 4 (* 2 ti)))))
          (seek (sg g-seek))
          (i 0))
     (loop while (and (< i n) (< (aref sc (+ o (* 4 i))) seek))
@@ -87,8 +89,8 @@ resamples for the device, if it must, after the engine.")
 
 (define-dsp seq-due ((s :buf) (sc :buf) (b :int) (ti :int)) :inline
   "A positive number when track TI's next note has come."
-  (let* ((o (ifloor (aref sc (+ 2 (* 2 ti)))))
-         (n (ifloor (aref sc (+ 3 (* 2 ti)))))
+  (let* ((o (ifloor (aref sc (+ 3 (* 2 ti)))))
+         (n (ifloor (aref sc (+ 4 (* 2 ti)))))
          (i (ifloor (st tr-idx))))
     (if (and (< i n) (<= (aref sc (+ o (* 4 i))) (sg g-beat))) 1d0 0d0)))
 
@@ -98,7 +100,7 @@ resamples for the device, if it must, after the engine.")
 
 (define-dsp seq-offset ((s :buf) (sc :buf) (b :int) (ti :int)) :num
   "Where track TI's current note is in the score, as a double."
-  (+ (aref sc (+ 2 (* 2 ti))) (* 4d0 (dfloor (st tr-idx)))))
+  (+ (aref sc (+ 3 (* 2 ti))) (* 4d0 (dfloor (st tr-idx)))))
 
 (define-dsp lane-value ((sc :buf) (q :int) (m :int) (beat :num)) :num
   "The lane of M points at SC[Q] at BEAT: a straight line from point to
@@ -210,7 +212,17 @@ param-size).  A device's on switch sits just before its parameters."
         (pb (getf instrument :param)))
     (ecase (getf instrument :kind)
       (:synth `(synth-note-on s p ,b ,pb pitch vel gate))
-      (:drums `(drum-note-on s p ,b ,pb pitch vel gate)))))
+      (:drums `(drum-note-on s p ,b ,pb pitch vel gate))
+      ;; a clip's event carries its region where a note has a pitch
+      (:sampler `(sampler-start s sc ,b pitch vel gate 0d0)))))
+
+(defun instrument-run-form (instrument bus)
+  "The call that makes INSTRUMENT's sound on the bus at BUS."
+  (let ((b (getf instrument :state))
+        (pb (getf instrument :param)))
+    (if (eq (getf instrument :kind) :sampler)
+        `(sampler-run s pool ,b ,bus)
+        `(,(device-kind-run (device-kind (getf instrument :kind))) s p ,b ,pb ,bus))))
 
 (defun device-run-form (device own-bus placed)
   "The call that runs DEVICE, placed, on the bus at OWN-BUS, when it is on."
@@ -250,8 +262,7 @@ param-size).  A device's on switch sits just before its parameters."
                               (gate (aref sc (+ e 1))))
                          ,(note-on-form instrument)
                          (seq-note s sc ,tb ,index))))
-            (,(device-kind-run (device-kind (getf instrument :kind)))
-             s p ,(getf instrument :state) ,(getf instrument :param) ,bus)))
+            ,(instrument-run-form instrument bus)))
       ,@(mapcar (lambda (d) (device-run-form d bus placed)) (getf track :devices))
       (track-out s ,tb ,master-bus)
       ,@(loop for r in returns
@@ -273,14 +284,16 @@ the state and parameter sizes after it as values."
                    (auto-apply s p sc))
                  ,@(mapcan #'tick-forms (copy-list placed))
                  nil)
-               (engine-frames (s p sc ol orr n)
+               (engine-frames (s p sc pool ol orr n)
                  (dotimes (f n)
                    (when (< (sg g-tick) 0.5d0)
                      (engine-tick s p sc))
                    (when (> (sg g-reseek) 0.5d0)
                      ,@(loop for track in tracks
                              for i from 0
-                             collect `(seq-seek s sc ,(getf track :state) ,i))
+                             collect `(seq-seek s sc ,(getf track :state) ,i)
+                             when (eq (getf (getf track :instrument) :kind) :sampler)
+                               collect `(sampler-chase s sc ,(getf (getf track :instrument) :state) ,i))
                      (setf (sg g-reseek) 0d0))
                    ,@(loop for track in tracks
                            for i from 0
@@ -301,14 +314,17 @@ the state and parameter sizes after it as values."
                (engine-note (s p ti pitch vel gate)
                  (cond ,@(loop for track in tracks
                                for i from 0
-                               collect `((= ti ,i) ,(note-on-form (getf track :instrument)))))
+                               unless (eq (getf (getf track :instrument) :kind) :sampler)
+                                 collect `((= ti ,i) ,(note-on-form (getf track :instrument)))))
                  nil)
                (engine-note-off (s ti pitch)
                  (cond ,@(loop for track in tracks
                                for i from 0
                                for instrument = (getf track :instrument)
                                when (eq (getf instrument :kind) :synth)
-                                 collect `((= ti ,i) (synth-note-off s ,(getf instrument :state) pitch))))
+                                 collect `((= ti ,i) (synth-note-off s ,(getf instrument :state) pitch))
+                               when (eq (getf instrument :kind) :sampler)
+                                 collect `((= ti ,i) (sampler-release s ,(getf instrument :state)))))
                  nil))))
       (values (mapcar #'normalize-dsp forms) state-size param-size placed))))
 
@@ -353,6 +369,7 @@ arrays' lengths, PLACED its layout."
                                 ,@(loop for v in lambda-list
                                         for type = (case v
                                                      ((s p sc ol orr) buffer)
+                                                     (pool '(simple-array single-float (*)))
                                                      (t 'fixnum))
                                         collect `(type ,type ,v)))
                        ,@body))))
@@ -383,6 +400,7 @@ arrays' lengths, PLACED its layout."
     this.s = new Float64Array(STATE_SIZE);
     this.p = Float64Array.from(o.params);
     this.sc = Float64Array.from(o.score);
+    this.pool = o.pool;
     this.quanta = 0;
     engineSetup(this.s, sampleRate);
     if (o.playing) transportStart(this.s, o.beat);
@@ -394,6 +412,7 @@ arrays' lengths, PLACED its layout."
     switch (m.t) {
     case 'params': this.p.set(m.params); break;
     case 'param': this.p[m.i] = m.v; break;
+    case 'pool': this.pool = m.pool; break;
     case 'score':
       this.sc = Float64Array.from(m.score);
       s[G_SEEK] = s[G_BEAT]; s[G_RESEEK] = 1;
@@ -410,7 +429,7 @@ arrays' lengths, PLACED its layout."
   }
   process(inputs, outputs) {
     const out = outputs[0];
-    engineFrames(this.s, this.p, this.sc, out[0], out[1] || out[0], out[0].length);
+    engineFrames(this.s, this.p, this.sc, this.pool, out[0], out[1] || out[0], out[0].length);
     if (++this.quanta >= 12) {
       this.quanta = 0;
       const peaks = new Array(METERS.length);
@@ -467,7 +486,11 @@ used twice in a context: (values js processor-name)."
   "SEQUENCE as a buffer the engine can read."
   (map '(simple-array double-float (*)) (lambda (x) (float x 1d0)) sequence))
 
-(defun render-plan (plan params score frames &key (sr 48000) (from 0d0) (block-size frames))
+(defparameter *empty-pool* (make-array 1 :element-type 'single-float :initial-element 0f0)
+  "The pool of a song with no recorded sound.")
+
+(defun render-plan (plan params score frames &key (sr 48000) (from 0d0) (block-size frames)
+                                                  (pool *empty-pool*))
   "FRAMES frames of PLAN, from beat FROM, as two double buffers: left
 and right, what the worklet plays.  BLOCK-SIZE only proves that the
 frames do not depend on how they are asked for."
@@ -482,13 +505,13 @@ frames do not depend on how they are asked for."
       (engine-setup s (float sr 1d0))
       (transport-start s (float from 1d0))
       (if (>= block-size frames)
-          (funcall run s p sc left right frames)
+          (funcall run s p sc pool left right frames)
           (let ((l (double-buffer block-size))
                 (r (double-buffer block-size)))
             (loop for done from 0 by block-size
                   while (< done frames)
                   do (let ((n (min block-size (- frames done))))
-                       (funcall run s p sc l r n)
+                       (funcall run s p sc pool l r n)
                        (replace left l :start1 done :end2 n)
                        (replace right r :start1 done :end2 n))))))
     (values left right)))

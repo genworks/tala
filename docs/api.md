@@ -57,6 +57,9 @@ the values for the sound that is wanted.
 - `(clip-notes track &optional clip)` — a clip's notes, each `(pitch
   start length velocity)`.
 
+In the prompt, end a block with these to read their answers: they come
+in the next message, and you act on them in your next block.
+
 ## Hearing it
 
 You cannot hear the song, so look at it.
@@ -96,7 +99,7 @@ look for:
 ## Tracks
 
 - `(add-track name &key instrument values)` — `:instrument` is `:synth`
-  (the default) or `:drums`; `:values` a plist of its controls.
+  (the default), `:drums` or `:sampler`; `:values` a plist of its controls.
 - `(add-return name)` — a return track.  Its effects usually want
   `:mix 1`, since the track's send sets how much is heard.
 - `(delete-track track)`, `(rename-track track name)`,
@@ -147,6 +150,43 @@ look for:
   The drum kit's pads are pitches 36 to 43, in the order under
   `:drums` below.
 - `(transpose-notes track clip semitones)`.
+
+## Recorded sound
+
+The person imports audio files on the page; you work with what is
+there.  A sample is recorded sound with a name.  An **audio track** is a
+track made with `(add-track "Voice" :instrument :sampler)`, and it plays
+**audio clips** rather than notes, up to four at once.  It takes effects
+and sends as any track does.
+
+- `(samples)` — the song's samples: name, seconds, channels, and what
+  they say, when you have been told.
+- `(sample-info sample)` — the same with `:peak` and `:phrases`, where
+  the sound is, as `((start end) ...)` in seconds.  In speech these are
+  the phrases, and their edges are the places to cut.
+- `(set-sample sample &key name words)` — rename it, or record what it
+  says.
+- `(delete-sample sample)` — one no clip is using.
+- `(add-audio-clip track sample &key start length offset gain transpose
+  name)` — the sample on an audio track from beat `:start`.  `:offset`
+  is where in the sample to begin, in seconds; `:length`, in beats,
+  runs to the sample's end when unsaid; `:gain` is in dB; `:transpose`
+  in semitones changes pitch and speed together.
+- `(set-clip track clip &key offset gain transpose ...)` changes them.
+
+**You cannot tell what a sample says.**  You see its name, its phrases
+and, with `hear`, its shape; the words only if someone gave them.  Do not
+guess.  When the words matter, ask the person, and keep their answer
+with `set-sample`.
+
+Recorded sound plays at its own speed and does not follow the tempo, so
+place a phrase to start on a beat and let it run.  To use part of a
+sample, read its `:phrases`, then give a clip the phrase's start as
+`:offset` and its length in beats, which at TEMPO is seconds x TEMPO /
+60.  Spoken word sits best in the gaps of a groove, often before a
+drop: cut the low end with `:eq`, send it to a delay or reverb return,
+and duck nothing under it unless the words get lost.  Transposing down
+a few semitones makes a voice darker and slower.
 
 ## Automation
 

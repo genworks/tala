@@ -4,8 +4,8 @@ A digital audio workstation in Common Lisp and the browser, with a
 prompt tile from the first commit.  A *tala* is a rhythmic cycle.
 
 Tracks, clips, a piano roll, automation, device chains, returns,
-sidechain ducking and a mixer, laid out as anyone who has used a modern
-DAW will expect.  In the prompt tile a language model works the same
+sidechain ducking, imported audio and a mixer, laid out as anyone who
+has used a modern DAW will expect.  In the prompt tile a language model works the same
 controls: ask for a style, a sound or an explanation, and it reads what
 each control does, sets them, checks the result and points at what it
 talked about.  There are no presets.  A sound is a set of values, and
@@ -27,7 +27,9 @@ AudioWorklet, which browsers offer only in a secure context, so use
 Space plays, Tab switches between the arrangement and the mixer, M turns
 the computer's keys into a keyboard, and a MIDI keyboard is picked up if
 the browser offers one.  Double-click a lane for a clip and a clip for
-its notes.  Point at any control and the Info box says what it does.
+its notes.  Drop an audio file on a track, or use Import audio, for
+spoken word or anything else the browser can read.  Point at any control
+and the Info box says what it does.
 
 ## How it is built
 
@@ -55,6 +57,15 @@ for that reason).  So the two agree **to the last bit**, not to a
 tolerance: `tests/browser.sh` compares every sample.  Nothing allocates
 on the audio thread, and Lisp is never on it.
 
+**Recorded sound is data too.**  The browser decodes a file once, at
+the engine's rate, and sends the samples to the server, which keeps them
+by what they are (`source/samples.lisp`).  Those numbers are then the
+sound on both sides: the page fetches them back as one pool the program
+reads, and a clip is a row of the score, so importing, moving or
+retuning audio rebuilds nothing and the two runtimes still agree to the
+last bit.  A song names its samples, so its file stays small and does
+not carry the audio.
+
 **One door.**  The page drives the song by sending forms of the Lisp API
 (`source/api.lisp`, `docs/api.md`), so nothing can be done with the
 mouse that a program or the model cannot do.  What the model may run is
@@ -76,7 +87,7 @@ the Info box and the model's reference, so a control is explained once
 
 Synth (two oscillators with FM, sub, noise, a resonant 12 or 24 dB
 filter, two envelopes, an LFO, glide), Drums (eight synthesized pads),
-Auto Filter, EQ Three, Saturator, Compressor with sidechain, Delay,
+Audio (a track of recorded clips), Auto Filter, EQ Three, Saturator, Compressor with sidechain, Delay,
 Chorus, Phaser, Reverb, Utility and Limiter.
 
 ## Tests
@@ -96,8 +107,9 @@ the other half.
 
 ## Not built yet
 
-The clip-launch grid over the same clips; audio tracks and samples;
-recording from a keyboard into a clip; tempo changes along the song;
+The clip-launch grid over the same clips; recording from a keyboard or
+microphone into a clip; stretching audio to the tempo; samples on drum
+pads; saved songs that carry their audio; tempo changes along the song;
 plugin hosting.
 
 ## License

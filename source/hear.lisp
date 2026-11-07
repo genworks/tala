@@ -296,9 +296,3 @@ buffers hold, for the browser to compare."
       (emit right))
     out))
 
-(defun single-bits (x)
-  "The bits of the double X rounded to a single, as a signed integer."
-  (let ((single (with-audio-floats (coerce x 'single-float))))
-    #+sbcl (sb-kernel:single-float-bits single)
-    #+ccl (ccl::single-float-bits single)
-    #-(or sbcl ccl) (error "No single-float-bits here: ~a" single)))

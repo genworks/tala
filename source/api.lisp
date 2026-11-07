@@ -126,6 +126,40 @@ values are only those that differ from the default.  :on switches it."
     (set-values! device pairs)
     device))
 
+(defun sample-seconds (sample)
+  (/ (getf sample :frames) (float *sample-rate* 1d0)))
+
+(defun find-sample (spec sample)
+  "The sample SAMPLE of SPEC, by name or id."
+  (or (find sample (getf spec :samples)
+            :key (lambda (s) (if (stringp sample) (getf s :name) (getf s :id)))
+            :test #'equalp)
+      (error "There is no sample ~s.  The samples are: ~{~s~^, ~}."
+             sample (mapcar (lambda (s) (getf s :name)) (getf spec :samples)))))
+
+(defun unique-sample-name (spec name)
+  (let ((names (mapcar (lambda (s) (getf s :name)) (getf spec :samples))))
+    (if (member name names :test #'string-equal)
+        (loop for i from 2
+              for candidate = (format nil "~a ~d" name i)
+              unless (member candidate names :test #'string-equal)
+                return candidate)
+        name)))
+
+(defun import-sample! (song name octets channels)
+  "OCTETS, float32 samples at the engine's rate, a channel after the
+other, kept and named in SONG: the name it took.  The same sound twice
+is one copy under two names."
+  (multiple-value-bind (stamp frames) (store-pcm! octets channels)
+    (edit-song! song
+                (lambda (spec)
+                  (let ((taken (unique-sample-name spec name)))
+                    (put! spec :samples
+                          (append (getf spec :samples)
+                                  (list (list :id (next-id! spec) :name taken :stamp stamp
+                                              :frames frames :channels channels :words nil))))
+                    taken)))))
+
 (defun value-text (device)
   "The values of DEVICE that differ from the default, as a plist."
   (getf device :values))
@@ -158,9 +192,13 @@ effects, clips and automation."
                          for i from 0
                          do (device-line device i))
                    (dolist (clip (getf track :clips))
-                     (format out "    clip ~a ~s: starts at beat ~a, ~a beats long, repeats every ~a, ~d notes~%"
-                             (getf clip :id) (getf clip :name) (getf clip :start) (getf clip :length)
-                             (or (getf clip :loop) (getf clip :length)) (length (getf clip :notes))))
+                     (if (getf clip :sample)
+                         (format out "    audio clip ~a ~s: starts at beat ~a, ~a beats long, from ~a s into the sample, gain ~a dB, transpose ~a~%"
+                                 (getf clip :id) (getf clip :name) (getf clip :start) (getf clip :length)
+                                 (getf clip :offset 0) (getf clip :gain 0) (getf clip :transpose 0))
+                         (format out "    clip ~a ~s: starts at beat ~a, ~a beats long, repeats every ~a, ~d notes~%"
+                                 (getf clip :id) (getf clip :name) (getf clip :start) (getf clip :length)
+                                 (or (getf clip :loop) (getf clip :length)) (length (getf clip :notes)))))
                    (dolist (lane (getf track :automation))
                      (let ((points (getf lane :points)))
                        (format out "    automation of ~(~s~)~@[ on device ~a~]: ~d points, beats ~a to ~a~%"
@@ -172,6 +210,11 @@ effects, clips and automation."
             (dolist (track (getf spec :returns))
               (track-lines track "Return"))
             (track-lines (getf spec :master) "Master")))
+        (dolist (sample (getf spec :samples))
+          (format out "Sample ~s: ~,2f seconds, ~a~@[, saying ~s~]~%"
+                  (getf sample :name) (sample-seconds sample)
+                  (if (= 2 (getf sample :channels)) "stereo" "mono")
+                  (getf sample :words)))
         (unless (getf spec :tracks)
           (format out "There are no instrument tracks yet.~%"))))))
 
@@ -207,6 +250,24 @@ effects, clips and automation."
 (define-op clip-notes (track &optional clip)
   "A clip's notes: each (pitch start length velocity), in beats from the clip's start."
   (getf (find-clip (find-track (the-object (song) spec) track) clip) :notes))
+
+(define-op samples ()
+  "The song's samples: name, seconds, channels, and what they say when told."
+  (mapcar (lambda (s)
+            (list :name (getf s :name) :seconds (sample-seconds s)
+                  :channels (getf s :channels) :words (getf s :words)))
+          (getf (the-object (song) spec) :samples)))
+
+(define-op sample-info (sample)
+  "A sample's length and level, and its phrases: where the sound is, as
+((start end)...) in seconds, the places to cut speech into pieces."
+  (let* ((found (find-sample (the-object (song) spec) sample))
+         (pcm (or (find-pcm (getf found :stamp))
+                  (error "The audio of ~s is not on this server; import it again." (getf found :name)))))
+    (list :name (getf found :name) :seconds (sample-seconds found)
+          :channels (getf found :channels) :words (getf found :words)
+          :peak (db-of (reduce #'max (pcm-data pcm) :key #'abs))
+          :phrases (pcm-phrases pcm *sample-rate*))))
 
 (define-op hear (&key (from 1) (bars 8) track)
   "A spectrogram and measures of BARS bars from bar FROM, of the song
@@ -457,6 +518,59 @@ SOURCE, so it ducks when SOURCE plays; nil listens to its own track."
 
 ;;; Clips and notes.
 
+(defun check-sampler (found)
+  (unless (eq (getf (getf found :instrument) :kind) :sampler)
+    (error "Audio clips go on an audio track, one made with (add-track name :instrument :sampler); ~s is not one."
+           (getf found :name))))
+
+(define-op add-audio-clip (track sample &key (start 0) length (offset 0) (gain 0) (transpose 0) name)
+  "SAMPLE on an audio TRACK from beat START.  OFFSET is where in the
+sample it starts, in seconds; LENGTH, in beats, runs to the sample's end
+when unsaid; GAIN is in dB; TRANSPOSE in semitones changes its pitch and
+speed together."
+  (edit-song! (song)
+              (lambda (spec)
+                (let* ((found (find-track spec track))
+                       (s (find-sample spec sample))
+                       (rate (expt 2d0 (/ transpose 12d0)))
+                       (seconds (/ (- (sample-seconds s) offset) rate))
+                       (beats (or length (/ (round (* 1000 seconds (/ (getf spec :tempo) 60))) 1000d0)))
+                       (clip (list :id (next-id! spec) :name (or name (getf s :name))
+                                   :start start :length beats :sample (getf s :id)
+                                   :offset offset :gain gain :transpose transpose)))
+                  (check-sampler found)
+                  (unless (and (realp start) (<= 0 start) (realp offset) (<= 0 offset)
+                               (plusp seconds) (plusp beats))
+                    (error "A clip starts at a beat from 0 up, at an offset within the sample, which is ~,2f seconds long."
+                           (sample-seconds s)))
+                  (put! found :clips (append (getf found :clips) (list clip)))
+                  (list :clip (getf clip :id) :track (getf found :name) :start start :length beats)))))
+
+(define-op set-sample (sample &key name (words nil words?))
+  "Rename a sample, or say what it says: WORDS, which is the only way
+the model knows."
+  (edit-song! (song)
+              (lambda (spec)
+                (let ((s (find-sample spec sample)))
+                  (when name
+                    (unless (string-equal name (getf s :name))
+                      (put! s :name (unique-sample-name spec name))))
+                  (when words? (put! s :words words))
+                  (list :name (getf s :name) :words (getf s :words))))))
+
+(define-op delete-sample (sample)
+  "Remove a sample no clip is using."
+  (edit-song! (song)
+              (lambda (spec)
+                (let ((s (find-sample spec sample)))
+                  (when (some (lambda (track)
+                                (find (getf s :id) (getf track :clips)
+                                      :key (lambda (c) (getf c :sample))))
+                              (getf spec :tracks))
+                    (error "Clips still use ~s; delete them first." (getf s :name)))
+                  (put! spec :samples (remove s (getf spec :samples)))
+                  (list :deleted (getf s :name))))))
+
 (define-op add-clip (track &key name (start 0) (length 4) loop notes)
   "A clip on TRACK from beat START, LENGTH beats long.  With LOOP, its
 notes repeat every LOOP beats.  NOTES as in add-notes."
@@ -469,6 +583,8 @@ notes repeat every LOOP beats.  NOTES as in add-notes."
                                    :notes (mapcar #'note-spec notes))))
                   (unless (getf found :instrument)
                     (error "Clips go on instrument tracks; ~s is not one." (getf found :name)))
+                  (when (eq (getf (getf found :instrument) :kind) :sampler)
+                    (error "~s is an audio track: it takes add-audio-clip." (getf found :name)))
                   (unless (and (realp start) (<= 0 start) (realp length) (plusp length))
                     (error "A clip starts at a beat from 0 up and has a positive length."))
                   (put! found :clips (append (getf found :clips) (list clip)))
@@ -484,8 +600,9 @@ notes repeat every LOOP beats.  NOTES as in add-notes."
                   (put! found :clips (remove c (getf found :clips)))
                   (list :deleted (getf c :id))))))
 
-(define-op set-clip (track clip &key name start length (loop nil loop?))
-  "Move, resize or rename a clip; :loop sets how often its notes repeat."
+(define-op set-clip (track clip &key name start length (loop nil loop?) offset gain transpose)
+  "Move, resize or rename a clip; :loop sets how often its notes repeat.
+On an audio clip, :offset (seconds into the sample), :gain and :transpose."
   (edit-song! (song)
               (lambda (spec)
                 (let ((c (find-clip (find-track spec track) clip)))
@@ -493,6 +610,9 @@ notes repeat every LOOP beats.  NOTES as in add-notes."
                   (when start (put! c :start (max 0 start)))
                   (when length (put! c :length (max 0.0625 length)))
                   (when loop? (put! c :loop loop))
+                  (when offset (put! c :offset (max 0 offset)))
+                  (when gain (put! c :gain (max -60 (min 24 gain))))
+                  (when transpose (put! c :transpose (max -36 (min 36 transpose))))
                   (list :clip (getf c :id) :start (getf c :start) :length (getf c :length)
                         :loop (getf c :loop))))))
 
@@ -629,5 +749,6 @@ CLIP, :notes (the piano roll)."
 (defparameter *reading-operators*
   (mapcar (lambda (name) (intern name :tala-api))
           '("DESCRIBE-SONG" "SONG-INFO" "DEVICE-KINDS" "DEVICE-CONTROLS" "DEVICE-VALUES" "CLIP-NOTES"
+            "SAMPLES" "SAMPLE-INFO"
             "HEAR" "POINT-AT" "SHOW" "UNDO" "REDO"))
   "The operations that leave nothing for a prompt's undo to take back.")

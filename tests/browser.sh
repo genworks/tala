@@ -19,4 +19,6 @@ echo "== parity"
 timeout 120 node "$DIR/probe.js" "$URL" "${SHOT_DIR:+$SHOT_DIR/parity.png}" 'TALA.selfTest(480000)' || status=1
 echo "== page"
 timeout 120 node "$DIR/probe.js" "$URL" "${SHOT_DIR:+$SHOT_DIR/page.png}" 'TALA.uiTest()' || status=1
+echo "== samples"
+timeout 120 node "$DIR/probe.js" "$BASE/tala/?s=sample-test-$$" "${SHOT_DIR:+$SHOT_DIR/samples.png}" 'TALA.sampleTest()' || status=1
 exit $status

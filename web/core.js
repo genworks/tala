@@ -21,6 +21,7 @@ const T = window.TALA = {
   trackId: null, clipId: null,
   view: 'arrangement', detail: 'devices',
   ppb: 22, beat: 0, startBeat: 0, playing: false,
+  pool: new Float32Array(1), poolStamp: null,
   autoOpen: {},
   renderers: [],
 };
@@ -104,10 +105,70 @@ function applySong(song) {
     T.trackId = (song.tracks[0] || song.master).id;
   }
   if (!selectedClip()) T.clipId = null;
-  syncEngine();
+  T.synced = fetchPool().then(syncEngine);
   renderAll();
   saveLocal();
 }
+
+// The song's recorded sound, the same numbers the server renders from.
+// A song names its samples, so this comes only when they change.
+async function fetchPool() {
+  const stamp = T.song.poolStamp;
+  if (stamp === T.poolStamp) return;
+  const r = await fetch(`/tala/api/pool?s=${encodeURIComponent(T.session)}`);
+  T.pool = new Float32Array(await r.arrayBuffer());
+  T.poolStamp = stamp;
+  if (engine.node) engine.node.port.postMessage({ t: 'pool', pool: T.pool });
+  renderArrangement();
+  renderDetail();
+}
+
+// A file becomes float32 at the engine's rate here, once.  The browser
+// resamples as it decodes, and what it made is the sound from then on.
+T.decodeFile = async function decodeFile(file) {
+  const context = new OfflineAudioContext(1, 1, 48000);
+  const audio = await context.decodeAudioData(await file.arrayBuffer());
+  const channels = Math.min(2, audio.numberOfChannels);
+  const data = new Float32Array(channels * audio.length);
+  for (let c = 0; c < channels; c++) data.set(audio.getChannelData(c), c * audio.length);
+  return { channels, data };
+};
+
+T.uploadSample = async function uploadSample(name, channels, data) {
+  const query = `s=${encodeURIComponent(T.session)}&name=${encodeURIComponent(name)}&channels=${channels}`;
+  const r = await fetch(`/tala/api/sample?${query}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: data,
+  });
+  if (!r.ok) throw new Error(await r.text());
+  const answer = await r.json();
+  applySong(answer.song);
+  return answer.name;
+};
+
+// An audio track to put a clip on: the given one, the selected one, or
+// a new one.
+async function audioTrack(track) {
+  const isAudio = (t) => t && t.instrument && t.instrument.kind === 'sampler';
+  if (isAudio(track)) return track.name;
+  const selected = selectedTrack();
+  if (isAudio(selected)) return selected.name;
+  const name = uniqueName('Audio');
+  await T.send(`(add-track ${lit(name)} :instrument :sampler)`);
+  return name;
+}
+
+T.importFile = async function importFile(file, track, beat = T.startBeat) {
+  status(`Reading ${file.name}...`);
+  try {
+    const { channels, data } = await T.decodeFile(file);
+    const name = await T.uploadSample(file.name.replace(/\.[^.]*$/, ''), channels, data);
+    const target = await audioTrack(track);
+    await T.send(form('add-audio-clip', target, name, kw('start'), beat));
+    status(`${name} is on ${target}. Tell the prompt what it says with (set-sample), or ask it to.`);
+  } catch (e) {
+    status(`Could not import ${file.name}: ${e.message}`);
+  }
+};
 
 function renderAll() {
   for (const render of T.renderers) render();
@@ -180,7 +241,7 @@ async function syncEngine() {
   if (ticket !== engine.ticket) return;
   const node = new AudioWorkletNode(engine.ctx, song.processor, {
     numberOfInputs: 0, outputChannelCount: [2],
-    processorOptions: { params: song.params, score: song.score, playing: T.playing, beat: T.beat },
+    processorOptions: { params: song.params, score: song.score, pool: T.pool, playing: T.playing, beat: T.beat },
   });
   node.port.onmessage = (e) => {
     if (node === engine.node) heardFromEngine(e.data);

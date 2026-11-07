@@ -218,10 +218,20 @@ function renderDetail() {
     el('button', { class: notes ? 'on' : '', disabled: !clip, 'data-ctl': 'notes',
                    onclick: () => { T.detail = 'notes'; renderDetail(); } }, 'Notes'));
   const bar = el('div', { id: 'detail-bar' }, tabs, el('span', { class: 'title' }, track.name));
+  const field = (label, value, key, doc, step = 0.25) => el('label', { 'data-title': label, 'data-doc': doc }, label,
+    el('input', { type: 'number', step, value,
+                  onchange: (e) => T.send(form('set-clip', track.name, clip.id, kw(key), +e.target.value)) }));
+  if (notes && clip.sample) {
+    bar.append(
+      field('Length', clip.length, 'length', 'How long the clip runs on the timeline, in beats.'),
+      field('Start in sample', clip.offset, 'offset', 'Seconds into the sample where the clip begins.', 0.01),
+      field('Gain', clip.gain, 'gain', 'This clip\'s level, in dB.', 0.5),
+      field('Transpose', clip.transpose, 'transpose', 'Semitones. Pitch and speed change together: down is slower and deeper.', 1));
+    box.replaceChildren(bar, el('div', { id: 'detail-body' }));
+    renderAudioClip(clip);
+    return;
+  }
   if (notes) {
-    const field = (label, value, key, doc) => el('label', { 'data-title': label, 'data-doc': doc }, label,
-      el('input', { type: 'number', step: 0.25, min: 0, value,
-                    onchange: (e) => T.send(form('set-clip', track.name, clip.id, kw(key), +e.target.value)) }));
     bar.append(
       field('Length', clip.length, 'length', 'How long the clip runs on the timeline, in beats.'),
       field('Repeat', clip.loop || clip.length, 'loop', 'The notes repeat every this many beats.'),
@@ -230,6 +240,19 @@ function renderDetail() {
   box.replaceChildren(bar, el('div', { id: 'detail-body' }));
   if (notes) renderRoll(track, clip);
   else renderDevices(track);
+}
+
+// An audio clip's sound, large.
+function renderAudioClip(clip) {
+  const body = $('#detail-body');
+  const sample = T.song.samples.find((s) => s.id === clip.sample);
+  const canvas = el('canvas', { width: Math.max(300, body.clientWidth - 16), height: Math.max(90, body.clientHeight - 58) });
+  drawWaveform(canvas, clip, '#38c3b4');
+  body.replaceChildren(el('div', { class: 'hint' },
+    sample ? `${sample.name}: ${sample.seconds.toFixed(2)} s, ${sample.channels === 2 ? 'stereo' : 'mono'}` : 'The sample is gone.',
+    sample && sample.missing ? ' — its audio is not on this server; import it again.' : '',
+    sample && sample.words ? ` — "${sample.words}"` : ''),
+  canvas);
 }
 
 // The piano roll.

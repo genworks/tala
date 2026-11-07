@@ -54,4 +54,8 @@
 
 (asdf:load-system :tala)
 
+;; Samples outlast a restart where the workspace has a place for them.
+(when (probe-file "/projects/.state/")
+  (funcall (intern "CONFIGURE-SAMPLES!" :tala) :directory "/projects/.state/tala-samples/"))
+
 (funcall (intern "PUBLISH-TALA!" :tala))

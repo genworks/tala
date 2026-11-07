@@ -67,11 +67,52 @@ To do something: reply with a sentence or two saying what you will do and why it
 
 To explain: answer in a few plain sentences and use point-at in the block to show the person each control you name, so they learn where it is.  When nothing should change, the block holds only point-at and show forms, or is empty.
 
-A message describing the song comes with each request; a request that follows another continues from the song as it now is.  (hear) shows you what the song sounds like: end your block with it, the forms up to it run, the spectrogram and measures arrive in the next message, and you answer again in the same form with the forms that remain, or an empty block and a sentence when it is done.  Check your work this way when you have made or changed a sound."
+A message describing the song comes with each request; a request that follows another continues from the song as it now is.  (hear) shows you what the song sounds like: end your block with it, the forms up to it run, the spectrogram and measures arrive in the next message, and you answer again in the same form with the forms that remain, or an empty block and a sentence when it is done.  Check your work this way when you have made or changed a sound.  The operations under \"Reading the song\" and sample-info and samples come back the same way: end the block with them and their answers arrive in the next message, each as the caption of a blank gray picture, which you can ignore.  Forms after them in the block run before you have read the answer, so ask first and act in your next block."
   "What the model is told after the reference.")
 
-(defparameter *prompt-looks* 3
-  "How many times the model may hear, and answer again, in one prompt.")
+(defparameter *prompt-looks* 6
+  "How many times the model may hear or ask, and answer again, in one
+prompt.")
+
+;;; What a reading operation answers must reach the model, and
+;;; sexp-agent sends back only failures and pictures.  So in a prompt
+;;; such an answer travels as a picture: a blank one, whose caption is
+;;; the answer.
+
+(defstruct (answer (:constructor make-answer (text)))
+  "What a reading operation answered, on its way to the model."
+  text)
+
+(defparameter *answering-operators*
+  (mapcar (lambda (name) (intern name :tala-api))
+          '("SONG-INFO" "DEVICE-KINDS" "DEVICE-CONTROLS" "DEVICE-VALUES" "CLIP-NOTES"
+            "SAMPLES" "SAMPLE-INFO"))
+  "The operations a model calls for what they answer.")
+
+(defvar *blank-png* nil "A small gray picture, made when first wanted.")
+
+(defun blank-png ()
+  (or *blank-png*
+      (setf *blank-png*
+            (png-octets (make-array (* 3 8 8) :element-type '(unsigned-byte 8) :initial-element 128) 8 8))))
+
+(defun answers-for-model (results passed)
+  "RESULTS with each reading operation's value made an answer, and PASSED."
+  (values (mapcar (lambda (r)
+                    (let ((form (getf r :form)))
+                      (if (and (getf r :ok) (consp form) (member (car form) *answering-operators*))
+                          (list :form form :ok t
+                                :value (make-answer
+                                        (format nil "~a answered: ~a"
+                                                (sexp-agent:form-string *agent* form)
+                                                (let ((*package* (find-package :tala-api))
+                                                      (*print-case* :downcase) (*print-pretty* nil)
+                                                      (*print-readably* nil)
+                                                      (*read-default-float-format* 'double-float))
+                                                  (prin1-to-string (getf r :value))))))
+                          r)))
+                  results)
+          passed))
 
 (defparameter *prompt-history-turns* 6
   "How many earlier turns on a song go with each prompt.")
@@ -83,7 +124,12 @@ A message describing the song comes with each request; a request that follows an
                          :rules *rules*
                          :max-tokens 8000))
 
-(setf *agent* (make-tala-agent))
+;; A reload keeps where the agent was pointed: making it anew would send
+;; it to the public address with no key, which fails as a bad key would.
+(if (boundp '*agent*)
+    (setf (sexp-agent:agent-operators *agent*) (operators-for-prompt)
+          (sexp-agent:agent-rules *agent*) *rules*)
+    (setf *agent* (make-tala-agent)))
 
 (defun configure-agent! (&key (messages-url nil url?) (api-key-file nil key?)
                               (model nil model?) (effort nil effort?)
@@ -150,12 +196,16 @@ cost anyone their prompt."
                                :state-text state
                                :session-id (format nil "tala-~a" (session-id session))
                                :history history
-                               :runner (lambda (code) (run-forms session code))
+                               :runner (lambda (code)
+                                         (multiple-value-call #'answers-for-model
+                                           (run-forms session code)))
                                :looks *prompt-looks*
                                :picture-of (lambda (value)
-                                             (when (picture-p value)
-                                               (push (picture-png value) heard)
-                                               (values (picture-png value) (picture-note value))))))
+                                             (cond ((picture-p value)
+                                                    (push (picture-png value) heard)
+                                                    (values (picture-png value) (picture-note value)))
+                                                   ((answer-p value)
+                                                    (values (blank-png) (answer-text value)))))))
       ;; however it ended, what ran comes back as one undo
       (bt:with-lock-held ((session-lock session))
         (unless (eq before (the-object song spec))

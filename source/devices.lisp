@@ -348,6 +348,110 @@ as a plain saw.  Anything else is set through the pads' parameters.")
             (when (and (< amp 0.00005d0) (< namp 0.00005d0))
               (setf (aref s (+ o dv-active)) 0d0))))))))
 
+;;; The audio player: a track of recorded sound.  A clip is a row of the
+;;; score's region table, six numbers (where the left and right channels
+;;; are in the pool, the first and last frame, the rate, the gain), and
+;;; its event's pitch is that row's number; so moving, trimming or
+;;; retuning a clip is data, and the program is the same.
+
+(define-params sm :sampler
+  (:fade "Fade" :default 3 :min 0.1 :max 200 :unit "ms" :scale :log
+   :doc "How fast a clip fades in and out at its edges. A few milliseconds stops clicks; more softens a cut through a word.")
+  (:level "Level" :default 0 :min -60 :max 12 :unit "dB" :doc "The level of every clip on this track."))
+
+(define-slots sa fade level age)
+(define-slots sv active pos end left right rate gain gate stage env age)
+
+(define-dsp sampler-tick ((s :buf) (p :buf) (b :int) (pb :int)) :nil
+  (setf (st sa-fade) (/ 1000d0 (* (pv sm-fade) (sg g-sr))))
+  (setf (st sa-level) (db-gain (pv sm-level))))
+
+(define-dsp sampler-release ((s :buf) (b :int)) :nil
+  (dotimes (v 4)
+    (let* ((o (+ b sa-size (* v sv-size))))
+      (when (> (aref s (+ o sv-active)) 0.5d0)
+        (setf (aref s (+ o sv-stage)) 2d0)))))
+
+(define-dsp sampler-start ((s :buf) (sc :buf) (b :int) (region :num) (vel :num) (gate :num) (skip :num)) :nil
+  "Region number REGION on a free voice for GATE beats, SKIP beats in."
+  (let* ((row (+ (ifloor (aref sc 2)) (* 6 (ifloor region))))
+         (rate (aref sc (+ row 4)))
+         (pos (+ (aref sc (+ row 2)) (/ (* skip rate) (sg g-bpf))))
+         (end (aref sc (+ row 3)))
+         (pick -1)
+         (steal 0)
+         (oldest 1d300))
+    (when (< pos (- end 1d0))
+      (dotimes (v 4)
+        (let* ((o (+ b sa-size (* v sv-size))))
+          (when (and (< pick 0) (< (aref s (+ o sv-active)) 0.5d0))
+            (setf pick v))
+          (when (< (aref s (+ o sv-age)) oldest)
+            (setf oldest (aref s (+ o sv-age)))
+            (setf steal v))))
+      (let* ((o (+ b sa-size (* (if (< pick 0) steal pick) sv-size))))
+        (setf (st sa-age) (+ (st sa-age) 1d0))
+        (setf (aref s (+ o sv-age)) (st sa-age))
+        (setf (aref s (+ o sv-active)) 1d0)
+        (setf (aref s (+ o sv-pos)) pos)
+        (setf (aref s (+ o sv-end)) end)
+        (setf (aref s (+ o sv-left)) (aref sc row))
+        (setf (aref s (+ o sv-right)) (aref sc (+ row 1)))
+        (setf (aref s (+ o sv-rate)) rate)
+        (setf (aref s (+ o sv-gain)) (* (aref sc (+ row 5)) (/ vel 127d0)))
+        (setf (aref s (+ o sv-gate)) gate)
+        (setf (aref s (+ o sv-stage)) 1d0)
+        (setf (aref s (+ o sv-env)) 0d0)))))
+
+(define-dsp sampler-chase ((s :buf) (sc :buf) (b :int) (ti :int)) :nil
+  "After a jump: what was playing stops, and a clip the new place falls
+inside starts from there.  A long clip must not wait for its beginning."
+  (sampler-release s b)
+  (let* ((o (ifloor (aref sc (+ 3 (* 2 ti)))))
+         (n (ifloor (aref sc (+ 4 (* 2 ti)))))
+         (seek (sg g-seek)))
+    (dotimes (i n)
+      (let* ((e (+ o (* 4 i)))
+             (start (aref sc e))
+             (stop (+ start (aref sc (+ e 1)))))
+        (when (and (< start seek) (> stop seek))
+          (sampler-start s sc b (aref sc (+ e 2)) (aref sc (+ e 3)) (- stop seek) (- seek start)))))))
+
+(define-dsp sampler-run ((s :buf) (pool :pool) (b :int) (bus :int)) :nil
+  (let* ((fade (st sa-fade))
+         (level (st sa-level)))
+    (dotimes (v 4)
+      (let* ((o (+ b sa-size (* v sv-size))))
+        (when (> (aref s (+ o sv-active)) 0.5d0)
+          (let* ((gate (- (aref s (+ o sv-gate)) (sg g-bpf)))
+                 (pos (aref s (+ o sv-pos)))
+                 (rate (aref s (+ o sv-rate)))
+                 (end (aref s (+ o sv-end)))
+                 (i (ifloor pos))
+                 (f (- pos (dfloat i)))
+                 (j (if (>= (dfloat (+ i 1)) end) i (+ i 1)))
+                 (lo (ifloor (aref s (+ o sv-left))))
+                 (ro (ifloor (aref s (+ o sv-right))))
+                 (a (dfloat (aref pool (+ lo i))))
+                 (c (dfloat (aref pool (+ ro i))))
+                 (l (+ a (* f (- (dfloat (aref pool (+ lo j))) a))))
+                 (r (+ c (* f (- (dfloat (aref pool (+ ro j))) c))))
+                 (stage (aref s (+ o sv-stage)))
+                 (env (aref s (+ o sv-env)))
+                 (next (if (< stage 1.5d0) (min 1d0 (+ env fade)) (- env fade)))
+                 (g (* next (aref s (+ o sv-gain)) level))
+                 (ahead (+ pos rate (/ rate fade))))
+            (setf (aref s (+ o sv-gate)) gate)
+            (setf (aref s (+ o sv-env)) next)
+            (setf (aref s (+ o sv-pos)) (+ pos rate))
+            ;; fade out in time for the clip's end or the sample's
+            (when (or (<= gate 0d0) (>= ahead end))
+              (setf (aref s (+ o sv-stage)) 2d0))
+            (when (or (<= next 0d0) (>= (+ pos rate) (- end 1d0)))
+              (setf (aref s (+ o sv-active)) 0d0))
+            (setf (aref s bus) (+ (aref s bus) (* l g)))
+            (setf (aref s (+ bus 1)) (+ (aref s (+ bus 1)) (* r g)))))))))
+
 ;;; Effects.  Each takes the bus in place, two slots, left and right.
 
 (define-dsp mix-into ((s :buf) (bus :int) (l :num) (r :num) (wet :num)) :nil
@@ -776,6 +880,9 @@ function; DOC what it is for."
        (make-device-kind :drums "Drums" :instrument nil 'drum-run
                          (lambda (sr) (declare (ignore sr)) (+ dk-size (* 8 dv-size)))
                          "A drum kit of eight synthesized pads, played by pitches 36 to 43.")
+       (make-device-kind :sampler "Audio" :instrument 'sampler-tick 'sampler-run
+                         (lambda (sr) (declare (ignore sr)) (+ sa-size (* 4 sv-size)))
+                         "A track of recorded sound: spoken word, field recordings, loops. It plays audio clips, up to four at once.")
        (make-device-kind :filter "Auto Filter" :effect 'fx-filter-tick 'fx-filter
                          (lambda (sr) (declare (ignore sr)) fs-size)
                          "A resonant filter with an LFO. For sweeps, build-ups and rhythmic wobble.")

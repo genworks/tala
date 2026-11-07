@@ -58,11 +58,35 @@ function drawClipNotes(canvas, clip, color) {
   }
 }
 
+// The peaks of an audio clip across a canvas.
+function drawWaveform(canvas, clip, fill = 'rgba(0,0,0,.65)') {
+  const sample = T.song.samples.find((s) => s.id === clip.sample);
+  if (!sample || sample.missing || T.pool.length < sample.left + sample.frames) return;
+  const g = canvas.getContext('2d');
+  g.fillStyle = fill;
+  const rate = Math.pow(2, clip.transpose / 12);
+  const framesPerBeat = 48000 * 60 / T.song.tempo * rate;
+  const first = clip.offset * 48000;
+  const shown = Math.min(sample.frames - first, clip.length * framesPerBeat);
+  const width = Math.min(canvas.width, Math.ceil(shown / (clip.length * framesPerBeat) * canvas.width));
+  const middle = canvas.height / 2;
+  const step = Math.max(1, Math.floor(shown / width / 24));
+  for (let x = 0; x < width; x++) {
+    const from = sample.left + Math.floor(first + x / width * shown);
+    const to = sample.left + Math.floor(first + (x + 1) / width * shown);
+    let peak = 0;
+    for (let i = from; i < to; i += step) peak = Math.max(peak, Math.abs(T.pool[i]));
+    const h = Math.min(1, peak) * middle;
+    g.fillRect(x, middle - h, 1, Math.max(1, h * 2));
+  }
+}
+
 function clipElement(track, clip) {
   const color = COLORS[track.color % 12];
   const width = clip.length * T.ppb;
   const canvas = el('canvas', { width: Math.max(1, Math.min(4000, width)), height: 30 });
-  drawClipNotes(canvas, clip, color);
+  if (clip.sample) drawWaveform(canvas, clip);
+  else drawClipNotes(canvas, clip, color);
   const node = el('div', {
     class: 'clip' + (clip.id === T.clipId ? ' selected' : ''),
     'data-ctl': `clip:${clip.id}`,
@@ -324,8 +348,17 @@ function laneStyle(width) {
 function trackRow(track, width) {
   const lane = el('div', {
     class: 'lane', style: laneStyle(width),
+    ondragover: (e) => e.preventDefault(),
+    ondrop: (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const box = lane.getBoundingClientRect();
+      const at = snap((e.clientX - box.left) / T.ppb);
+      for (const file of e.dataTransfer.files) T.importFile(file, track, at);
+    },
     ondblclick: (e) => {
       if (track.kind !== 'midi' || e.target !== lane) return;
+      if (track.instrument.kind === 'sampler') return;
       const box = lane.getBoundingClientRect();
       const per = beatsPerBar();
       const at = Math.floor((e.clientX - box.left) / T.ppb / per) * per;

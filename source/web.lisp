@@ -131,13 +131,31 @@ point; the gate as it stands."
                               "start" (getf clip :start)
                               "length" (getf clip :length)
                               "loop" (or (getf clip :loop) :null)
-                              "notes" (getf clip :notes)))
+                              "notes" (getf clip :notes)
+                              "sample" (or (getf clip :sample) :null)
+                              "offset" (getf clip :offset 0)
+                              "gain" (getf clip :gain 0)
+                              "transpose" (getf clip :transpose 0)))
                        (getf track :clips))
        "automation" (mapcar (lambda (lane)
                               (obj "device" (or (getf lane :device) :null)
                                    "param" (getf lane :param)
                                    "points" (getf lane :points)))
                             (getf track :automation))))
+
+(defun samples-json (samples)
+  (let ((layout (pool-layout samples)))
+    (mapcar (lambda (sample)
+              (let ((row (assoc (getf sample :id) layout)))
+                (obj "id" (getf sample :id)
+                     "name" (getf sample :name)
+                     "seconds" (sample-seconds sample)
+                     "channels" (getf sample :channels)
+                     "frames" (getf sample :frames)
+                     "left" (second row)
+                     "words" (or (getf sample :words) :null)
+                     "missing" (jbool (zerop (fourth row))))))
+            samples)))
 
 (defun song-json (song)
   "All the page needs of SONG."
@@ -165,6 +183,8 @@ point; the gate as it stands."
                            collect (track-json track place i))
            "master" (track-json (getf spec :master) (first (last placed)) 0)
            "processor" processor
+           "samples" (samples-json (getf spec :samples))
+           "poolStamp" (fnv-hex (pool-key (getf spec :samples)))
            "params" (the-object song params)
            "score" (the-object song score)
            "undo" (length (the-object song undo-entries))
@@ -195,6 +215,12 @@ point; the gate as it stands."
 
 (defparameter *max-body-bytes* 4000000 "The largest request a door reads.")
 
+(defparameter *max-sample-bytes* 64000000
+  "The largest sample: about five and a half minutes of mono.")
+
+(defparameter *upload-stall-seconds* 30
+  "How long a sample's upload may pause before it is given up.")
+
 (defvar *agent*)
 
 (defun request-session (req)
@@ -215,19 +241,40 @@ point; the gate as it stands."
   (send req ent "text/html; charset=utf-8" (invite-gate:refusal-page *gate*)
         net.aserve:*response-forbidden*))
 
-(defun oversized? (req)
+(defun declared-length (req)
   (let ((declared (net.aserve:header-slot-value req :content-length)))
-    (and declared
-         (> (or (ignore-errors (parse-integer declared :junk-allowed t)) 0) *max-body-bytes*))))
+    (and declared (ignore-errors (parse-integer declared :junk-allowed t)))))
 
-(defun publish-door (server path content-type fn)
+(defun oversized? (req limit)
+  (> (or (declared-length req) 0) limit))
+
+(defun read-body-octets (req)
+  "REQ's declared body straight from the socket into one octet vector:
+aserve's own reader makes a string of it, at four bytes a character."
+  (let* ((length (or (declared-length req) (error "The upload does not say how long it is.")))
+         (out (make-array length :element-type '(unsigned-byte 8)))
+         (sock (net.aserve:request-socket req))
+         (used 0))
+    ;; read now: the reply's keep-alive read must not read it again
+    (setf (net.aserve::request-request-body req) "")
+    (when (net.aserve::request-has-continue-expectation req)
+      (net.aserve::send-100-continue req))
+    (loop while (< used length)
+          do (let ((got (glisp:with-deadline (*upload-stall-seconds*)
+                          (read-sequence out sock :start used :end (min length (+ used 1048576))))))
+               (when (<= got used)
+                 (error "The upload ended after ~a of ~a bytes." used length))
+               (setf used got)))
+    out))
+
+(defun publish-door (server path content-type fn &key (limit *max-body-bytes*))
   "FN, a function of the request answering a string or octets, at PATH:
 behind the gate, what went wrong going back in words."
   (net.aserve:publish
    :path path :server server :content-type content-type
    :function (lambda (req ent)
                (cond ((not (invite-gate:invite-allowed? *gate* req)) (refused req ent))
-                     ((oversized? req)
+                     ((oversized? req limit)
                       (send req ent "text/plain" "That is too large."
                             net.aserve:*response-bad-request*))
                      (t
@@ -339,6 +386,18 @@ and two bars for the tails to ring out."
     (multiple-value-bind (left right) (render-song song frames :from from)
       (float32-octets left right))))
 
+(defun handle-sample (req)
+  "POST the decoded samples, a channel after the other, as float32, with
+?name= and ?channels=: answers the name it took and the song's state."
+  (let* ((session (request-session req))
+         (name (or (net.aserve:request-query-value "name" req :post nil) "Sample"))
+         (channels (parse-integer (or (net.aserve:request-query-value "channels" req :post nil) "1")))
+         (octets (read-body-octets req)))
+    (bt:with-lock-held ((session-lock session))
+      (let* ((song (session-song session))
+             (taken (import-sample! song name octets channels)))
+        (json-text (obj "name" taken "song" (song-json song)))))))
+
 (defun handle-load (req)
   (let ((text (body-field req "text"))
         (session (request-session req)))
@@ -395,5 +454,11 @@ inherits.")
                 (bt:with-lock-held ((session-lock session))
                   (song-text (session-song session))))))
       (door "/tala/api/load" "application/json" #'handle-load)
+      (publish-door server "/tala/api/sample" "application/json" #'handle-sample
+                    :limit *max-sample-bytes*)
+      (door "/tala/api/pool" "application/octet-stream"
+            (lambda (req)
+              (let ((session (request-session req)))
+                (floats-octets (pool-for (getf (the-object (session-song session) spec) :samples))))))
       (dolist (publisher *tala-publishers*)
         (funcall publisher server)))))

@@ -34,6 +34,38 @@ function renderBrowser() {
   ].flat());
 }
 
+function chooseAudio() {
+  const input = el('input', { type: 'file', accept: 'audio/*', multiple: true, onchange: async () => {
+    for (const file of input.files) await T.importFile(file);
+  } });
+  input.click();
+}
+
+function renderSamples() {
+  const song = T.song;
+  $('#sample-list').replaceChildren(...[
+    el('h3', {}, 'Samples'),
+    el('button', { class: 'kind', 'data-ctl': 'import', 'data-title': 'Import audio',
+                   'data-doc': 'WAV, MP3 and whatever else this browser can read. You can also drop files on a track. The audio stays with this server; a saved song only names it.',
+                   onclick: chooseAudio }, '+ Import audio'),
+    song.samples.map((s) => el('button', {
+      class: 'kind', 'data-ctl': `sample:${s.name}`, 'data-title': s.name,
+      'data-doc': `${s.seconds.toFixed(2)} s${s.words ? `: "${s.words}"` : ''}. Click to place it at the marker.${s.missing ? ' Its audio is not on this server; import it again.' : ''}`,
+      onclick: async () => {
+        const target = await audioTrack(null);
+        T.send(form('add-audio-clip', target, s.name, kw('start'), T.startBeat));
+      },
+    }, s.missing ? `⚠ ${s.name}` : s.name)),
+  ].flat());
+}
+
+// A file dropped anywhere else starts at the marker.
+document.addEventListener('dragover', (e) => e.preventDefault());
+document.addEventListener('drop', (e) => {
+  e.preventDefault();
+  for (const file of e.dataTransfer.files) T.importFile(file);
+});
+
 function renderFileButtons() {
   const song = T.song;
   $('#file-buttons').replaceChildren(
@@ -157,12 +189,13 @@ $('#prompt-form').addEventListener('submit', (e) => {
 // The page's half of the regression suite: the worklet, in a real
 // AudioContext's own offline form, against the server's frames.
 T.selfTest = async function selfTest(frames = 48000) {
+  await T.synced;
   const song = T.song;
   const context = new OfflineAudioContext(2, frames, 48000);
   await loadModule(context, song.processor);
   const node = new AudioWorkletNode(context, song.processor, {
     numberOfInputs: 0, outputChannelCount: [2],
-    processorOptions: { params: song.params, score: song.score, playing: true, beat: 0 },
+    processorOptions: { params: song.params, score: song.score, pool: T.pool, playing: true, beat: 0 },
   });
   node.connect(context.destination);
   const rendered = await context.startRendering();
@@ -226,6 +259,65 @@ T.uiTest = async function uiTest() {
   return { ok: failed.length === 0, failed, checks };
 };
 
+// A WAV file made here, three bursts of tone, for T.sampleTest.
+function testWav() {
+  const rate = 44100;
+  const frames = rate * 2;
+  const view = new DataView(new ArrayBuffer(44 + frames * 2));
+  const text = (at, s) => [...s].forEach((c, i) => view.setUint8(at + i, c.charCodeAt(0)));
+  text(0, 'RIFF'); view.setUint32(4, 36 + frames * 2, true); text(8, 'WAVEfmt ');
+  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true);
+  view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  text(36, 'data'); view.setUint32(40, frames * 2, true);
+  for (let i = 0; i < frames; i++) {
+    const t = i / rate;
+    const on = (t > 0.1 && t < 0.5) || (t > 0.9 && t < 1.2) || (t > 1.6 && t < 1.9);
+    view.setInt16(44 + i * 2, on ? 16000 * Math.sin(2 * Math.PI * 220 * t) : 0, true);
+  }
+  return new File([view.buffer], 'Test voice.wav', { type: 'audio/wav' });
+}
+
+// A file imported as a person imports one, at a rate the engine does
+// not run at, then the worklet against the server with the sample in
+// the song.  Run it on a session of its own: it clears the song.
+T.sampleTest = async function sampleTest() {
+  const checks = {};
+  await T.send(form('clear-song'));
+  await T.send(form('set-tempo', 120));
+  await T.importFile(testWav());
+  await T.synced;
+  const sample = T.song.samples[0];
+  checks.imported = Boolean(sample) && sample.name === 'Test voice';
+  checks.resampled = sample && Math.abs(sample.seconds - 2) < 0.01;
+  const track = T.song.tracks.find((t) => t.instrument.kind === 'sampler');
+  checks.onATrack = Boolean(track) && track.clips.length === 1;
+  checks.poolArrived = T.pool.length >= sample.frames;
+  const processor = T.song.processor;
+  await T.send(form('add-audio-clip', track.name, 'Test voice', kw('start'), 8, kw('transpose'), -5, kw('offset'), 0.05));
+  await T.send(form('add-track', 'Bed'), form('add-clip', 'Bed', kw('length'), 16, kw('notes'), [[48, 0, 8]]));
+  await T.send(form('add-device', track.name, kw('reverb'), kw('mix'), 0.4));
+  await T.synced;
+  checks.clipsMakeNoProgram = T.song.processor !== processor; // a track and a device do
+  const parity = await T.selfTest(48000 * 8);
+  checks.parity = parity.ok;
+  checks.heard = parity.peak > 0.1;
+  await T.play(0);
+  await new Promise((r) => setTimeout(r, 700));
+  checks.plays = T.peaks && Math.max(...T.peaks) > 0.01;
+  T.stop();
+  T.clipId = track.clips[0].id;
+  T.trackId = track.id;
+  T.detail = 'notes';
+  renderDetail();
+  checks.clipView = Boolean($('#detail-body canvas'));
+  checks.listed = Boolean(document.querySelector('[data-ctl="sample:Test voice"]'));
+  const info = await T.send(form('sample-info', 'Test voice'));
+  checks.phrases = /:phrases \(\(.*\) \(.*\) \(.*\)\)/.test(info.results[0].value);
+  const failed = Object.entries(checks).filter(([, v]) => !v).map(([k]) => k);
+  return { ok: failed.length === 0, failed, checks, frames: parity.frames, different: parity.different, info: info.results[0].value };
+};
+
 async function start() {
   const query = new URLSearchParams(location.search);
   T.session = query.get('s') || (() => {
@@ -237,7 +329,7 @@ async function start() {
     }
     return id;
   })();
-  T.renderers.push(renderTransport, renderFileButtons, renderArrangement, renderMixer, renderTabs, renderDetail);
+  T.renderers.push(renderTransport, renderFileButtons, renderSamples, renderArrangement, renderMixer, renderTabs, renderDetail);
   try {
     const [kinds, song] = await Promise.all([
       fetch('/tala/api/kinds').then((r) => r.json()),

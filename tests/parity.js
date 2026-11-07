@@ -20,6 +20,7 @@ async function main() {
   const frames = Number(framesText || 96000);
   const state = await (await fetch(`${base}/tala/api/state?s=${session}`)).json();
   const code = await (await fetch(`${base}/tala/api/engine.js?name=${state.processor}`)).text();
+  const pool = new Float32Array(await (await fetch(`${base}/tala/api/pool?s=${session}`)).arrayBuffer());
   const reference = new Float32Array(await (await fetch(
     `${base}/tala/api/render.f32?s=${session}&frames=${frames}`)).arrayBuffer());
   let Processor = null;
@@ -29,7 +30,7 @@ async function main() {
   globalThis.AudioWorkletProcessor = class { constructor() { this.port = { postMessage() {} }; } };
   globalThis.registerProcessor = (name, cls) => { Processor = cls; };
   (0, eval)(code);
-  const engine = new Processor({ processorOptions: { params: state.params, score: state.score, playing: true, beat: 0 } });
+  const engine = new Processor({ processorOptions: { params: state.params, score: state.score, pool, playing: true, beat: 0 } });
   const left = new Float32Array(frames);
   const right = new Float32Array(frames);
   const started = Date.now();

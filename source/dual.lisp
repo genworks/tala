@@ -61,6 +61,7 @@ too."
 (defun dsp-lisp-type (keyword)
   (ecase keyword
     (:buf '(simple-array double-float (*)))
+    (:pool '(simple-array single-float (*)))
     (:int 'fixnum)
     (:num 'double-float)))
 
