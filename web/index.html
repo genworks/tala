@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tala</title>
+<link rel="stylesheet" href="/tala/app.css">
+</head>
+<body>
+<header id="top">
+  <div id="brand">Tala</div>
+  <div id="file-buttons"></div>
+  <div id="transport"></div>
+  <div id="view-tabs"></div>
+</header>
+<main id="app">
+  <aside id="browser" data-ctl="browser">
+    <div id="browser-list"></div>
+    <div id="info"><b>Info</b><p>Point at any control to see what it does.</p></div>
+  </aside>
+  <section id="center">
+    <div id="arrangement" data-ctl="arrangement"></div>
+    <div id="mixer" data-ctl="mixer" hidden></div>
+    <div id="detail"></div>
+  </section>
+  <aside id="prompt" data-ctl="prompt">
+    <h2>Prompt</h2>
+    <div id="prompt-log"></div>
+    <form id="prompt-form">
+      <textarea id="prompt-text" rows="4"
+                placeholder="Ask for a sound, a groove or a whole setup, or ask what a control does."></textarea>
+      <div id="prompt-row">
+        <span id="prompt-status"></span>
+        <button type="submit" id="prompt-send">Ask</button>
+      </div>
+    </form>
+  </aside>
+</main>
+<div id="notes-layer"></div>
+<script src="/tala/core.js"></script>
+<script src="/tala/arrange.js"></script>
+<script src="/tala/detail.js"></script>
+<script src="/tala/mixer.js"></script>
+<script src="/tala/prompt.js"></script>
+<script src="/tala/main.js"></script>
+</body>
+</html>
