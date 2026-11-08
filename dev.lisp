@@ -15,10 +15,14 @@
 ;;;
 ;;; then browse /tala/ on that image's HTTP port.  zpng and salza2 come
 ;;; from the genworks/quicklisp checkout when the image does not carry
-;;; them.
+;;; them.  A host that must set the invite gate before the doors open
+;;; binds cl-user::*tala-publish* to nil first and publishes itself.
 ;;;
 
 (in-package :cl-user)
+
+(defvar *tala-publish* t
+  "Whether loading this file publishes the doors.")
 
 (let ((software #p"/projects/gw/quicklisp/dists/quicklisp/software/"))
   (dolist (pattern '("zpng-*/" "salza2-*/"))
@@ -58,4 +62,5 @@
 (when (probe-file "/projects/.state/")
   (funcall (intern "CONFIGURE-SAMPLES!" :tala) :directory "/projects/.state/tala-samples/"))
 
-(funcall (intern "PUBLISH-TALA!" :tala))
+(when *tala-publish*
+  (funcall (intern "PUBLISH-TALA!" :tala)))

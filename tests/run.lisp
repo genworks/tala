@@ -386,6 +386,18 @@ voice has phrases: (values octets channels)."
           (b (make-array 8 :element-type '(unsigned-byte 8) :initial-element 0)))
       (setf (aref b 7) 1)
       (not (string= (store-pcm! a 1) (store-pcm! b 1)))))
+  (check "the server refuses samples past its room for them, and says so"
+    (let ((saved *most-sample-bytes*))
+      (unwind-protect
+           (progn
+             (setf *most-sample-bytes* (held-sample-bytes))
+             ;; a sound never stored before, or the store has it already
+             (handler-case (progn (store-pcm! (floats-octets (make-array 4 :element-type 'single-float
+                                                                          :initial-element (random 1f0)))
+                                              1)
+                                  nil)
+               (error (e) (search "room for recorded sound is full" (princ-to-string e)))))
+        (setf *most-sample-bytes* saved))))
   (check "bytes that are not whole frames are refused"
     (handler-case (progn (store-pcm! (make-array 6 :element-type '(unsigned-byte 8) :initial-element 0) 1) nil)
       (error () t)))

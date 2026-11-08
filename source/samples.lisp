@@ -79,11 +79,26 @@ then the right, as single-floats."
 (defvar *sample-directory* nil
   "Where samples are kept across restarts; nil keeps them in memory only.")
 
-(defun configure-samples! (&key directory)
-  "Keep samples under DIRECTORY, made if need be, or in memory with nil."
-  (when directory
+(defparameter *most-sample-bytes* 512000000
+  "How much recorded sound the server holds before it refuses more: the
+room's heap is shared, and one visitor's uploads must not exhaust it.")
+
+(defun configure-samples! (&key (directory nil directory?) (most-bytes nil most?))
+  "Keep samples under DIRECTORY, made if need be, or in memory with nil;
+hold at most MOST-BYTES of them."
+  (when most? (setf *most-sample-bytes* most-bytes))
+  (when (and directory? directory)
     (ensure-directories-exist (uiop:ensure-directory-pathname directory)))
-  (setf *sample-directory* (and directory (uiop:ensure-directory-pathname directory))))
+  (when directory?
+    (setf *sample-directory* (and directory (uiop:ensure-directory-pathname directory))))
+  *sample-directory*)
+
+(defun held-sample-bytes ()
+  "The bytes of recorded sound in memory."
+  (let ((total 0))
+    (maphash (lambda (stamp pcm) (declare (ignore stamp)) (incf total (* 4 (length (pcm-data pcm)))))
+             *pcm-table*)
+    total))
 
 (defun sample-path (stamp)
   (merge-pathnames (format nil "~a.f32" stamp) *sample-directory*))
@@ -98,6 +113,8 @@ then the right, as single-floats."
     (let ((stamp (format nil "~d-~a" channels (content-stamp octets))))
       (bt:with-lock-held (*pcm-lock*)
         (unless (gethash stamp *pcm-table*)
+          (when (> (+ (held-sample-bytes) (length octets)) *most-sample-bytes*)
+            (error "This server's room for recorded sound is full, so the sample was not kept.  Use shorter samples, or ask whoever runs it to make room."))
           (setf (gethash stamp *pcm-table*) (make-pcm channels frames (octets-floats octets)))
           (when *sample-directory*
             (with-open-file (out (sample-path stamp) :direction :output :if-exists :supersede
