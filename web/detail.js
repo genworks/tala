@@ -167,6 +167,22 @@ function drumBody(track, device) {
   ];
 }
 
+// Where an external instrument's notes go: one of the browser's MIDI
+// outputs.  Until MIDI is allowed there is nothing to list.
+function portChoice(track, device) {
+  const outs = T.midiOutputs();
+  if (!outs.length) {
+    return el('div', { class: 'hint', 'data-ctl': 'midi-port' },
+      T.midi ? 'No MIDI outputs. Connect an interface or the instrument by USB.'
+        : 'This browser has not allowed MIDI; Chrome and Edge ask once, Safari has none.');
+  }
+  return el('label', { class: 'pad-sample', 'data-title': 'MIDI output',
+                       'data-doc': 'The MIDI output the instrument is on: an interface port, or the instrument itself over USB.' },
+    'Output ',
+    el('select', { 'data-ctl': 'midi-port', onchange: (e) => T.send(form('set-midi-port', track.name, e.target.value)) },
+      outs.map((o) => el('option', { value: o.name, selected: o.name === (device.port || outs[0].name) }, o.name))));
+}
+
 function deviceBody(track, device) {
   const kind = kindOf(device.kind);
   if (device.kind === 'drums') return drumBody(track, device);
@@ -174,7 +190,8 @@ function deviceBody(track, device) {
     return SYNTH_GROUPS.map(([title, keys]) => group(title, keys.map((key) =>
       controlFor(track, device, kind.params.find((p) => p.key === key)))));
   }
-  const extra = device.kind === 'compressor' ? sidechainChoice(track, device) : null;
+  const extra = device.kind === 'compressor' ? sidechainChoice(track, device)
+    : device.kind === 'external' ? portChoice(track, device) : null;
   return [extra, group(null, kind.params.map((p) => controlFor(track, device, p)))];
 }
 

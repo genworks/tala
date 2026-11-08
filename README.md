@@ -28,9 +28,12 @@ Space plays, F9 records what the armed tracks are played (an armed
 audio track records its input, picked on its device panel), Tab switches
 between the arrangement and the session, M turns
 the computer's keys into a keyboard, and a MIDI keyboard is picked up if
-the browser offers one.  Double-click a lane for a clip and a clip for
-its notes.  Drop an audio file on a track, or use Import audio, for
-spoken word or anything else the browser can read.  Point at any control
+the browser offers one (Chrome and Edge do; Safari has no MIDI).  An
+External track sends its notes to a MIDI output, and the Sync menu sends
+MIDI clock, start and stop to one.  Double-click a lane for a clip and a
+clip for its notes.  Drop an audio file on a track, or use Import audio,
+for spoken word or anything else the browser can read; drop one on a
+drum pad to play it from there.  Point at any control
 and the Info box says what it does.
 
 ## How it is built
@@ -113,7 +116,9 @@ the Info box and the model's reference, so a control is explained once
 Synth (two oscillators with FM, sub, noise, a resonant 12 or 24 dB
 filter, two envelopes, an LFO, glide), Drums (eight synthesized pads,
 each of which can also play a sample), Audio (a track of recorded clips
-that follow the tempo, stretched or repitched), Auto Filter, EQ Three, Saturator, Compressor with sidechain, Delay,
+that follow the tempo, stretched or repitched), External (a hardware
+instrument played over MIDI, its notes timed to when the rest is heard,
+early by its own latency), Auto Filter, EQ Three, Saturator, Compressor with sidechain, Delay,
 Chorus, Phaser, Reverb, Utility and Limiter.
 
 ## Tests
@@ -134,7 +139,9 @@ the other half.
 ## Not built yet
 
 Recording into a session slot (takes go into the arrangement); takes
-stacked as comps; follow actions; tempo
+stacked as comps; following an outside MIDI clock (Tala sends clock but
+does not take it); hearing an external instrument through its track's
+effects (record it to an audio track for that); follow actions; tempo
 per scene; warp markers inside a clip (a clip follows the tempo as a
 whole); choke groups and sample start, end and envelope on drum pads; saved songs that carry their audio; tempo changes along the song;
 plugin hosting.

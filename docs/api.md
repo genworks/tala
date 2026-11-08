@@ -99,7 +99,17 @@ look for:
 ## Tracks
 
 - `(add-track name &key instrument values)` — `:instrument` is `:synth`
-  (the default), `:drums` or `:sampler`; `:values` a plist of its controls.
+  (the default), `:drums`, `:sampler` (an audio track) or `:external`;
+  `:values` a plist of its controls.
+- **External instruments.**  A track with `:instrument :external` plays
+  a synthesizer or drum machine outside the browser over MIDI: clips and
+  notes as on any instrument track, sent to a MIDI output on the
+  `:channel` control, `:latency` ms early.  Nothing of it is heard in
+  Tala or in `hear`; the person hears it through their interface, and
+  records it onto an armed audio track to keep it as sound.
+  `(set-midi-port track port)` names the output, as the page lists it;
+  the page usually sets it.  The page can also send MIDI clock, for
+  hardware that follows the tempo.
 - `(add-return name)` — a return track.  Its effects usually want
   `:mix 1`, since the track's send sets how much is heard.
 - `(delete-track track)`, `(rename-track track name)`,

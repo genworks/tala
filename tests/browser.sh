@@ -25,6 +25,8 @@ echo "== recording"
 timeout 120 node "$DIR/probe.js" "$BASE/tala/?s=record-test-$$" "${SHOT_DIR:+$SHOT_DIR/record.png}" 'TALA.recordTest()' || status=1
 echo "== audio recording"
 timeout 120 node "$DIR/probe.js" "$BASE/tala/?s=audio-test-$$" "${SHOT_DIR:+$SHOT_DIR/audio.png}" 'TALA.audioRecordTest()' || status=1
+echo "== midi out"
+timeout 120 node "$DIR/probe.js" "$BASE/tala/?s=midi-test-$$" "${SHOT_DIR:+$SHOT_DIR/midi.png}" 'TALA.midiOutTest()' || status=1
 echo "== samples"
 timeout 120 node "$DIR/probe.js" "$BASE/tala/?s=sample-test-$$" "${SHOT_DIR:+$SHOT_DIR/samples.png}" 'TALA.sampleTest()' || status=1
 exit $status

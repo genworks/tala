@@ -108,6 +108,7 @@ point; the gate as it stands."
        "on" (jbool (getf device :on t))
        "key" (or (getf device :key) :null)
        "param" (getf place :param)
+       "port" (or (getf device :port) :null)
        "pads" (if (eq (getf device :kind) :drums)
                   (loop for pad from 1 to 8 collect (or (getf device (pad-sample-key pad)) :null))
                   :null)))

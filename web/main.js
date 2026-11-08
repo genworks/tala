@@ -159,11 +159,13 @@ document.addEventListener('keyup', (e) => {
   }
 });
 
-// A keyboard or pads, when the browser offers them.
+// A keyboard or pads, when the browser offers them, and the outputs
+// external instruments and the clock go to.
 async function connectMidi() {
   if (!navigator.requestMIDIAccess) return;
   try {
     const access = await navigator.requestMIDIAccess();
+    T.midi = access;
     const listen = (input) => {
       input.onmidimessage = ({ data }) => {
         const [command, pitch, velocity] = data;
@@ -173,7 +175,12 @@ async function connectMidi() {
       };
     };
     access.inputs.forEach(listen);
-    access.onstatechange = (e) => { if (e.port.type === 'input' && e.port.state === 'connected') listen(e.port); };
+    access.onstatechange = (e) => {
+      if (e.port.type === 'input' && e.port.state === 'connected') listen(e.port);
+      renderTransport();
+      renderDetail();
+    };
+    renderTransport();
   } catch (e) { /* none, or refused */ }
 }
 
@@ -535,6 +542,74 @@ T.audioRecordTest = async function audioRecordTest() {
   const failed = Object.entries(checks).filter(([, v]) => !v).map(([k]) => k);
   return { ok: failed.length === 0, failed, checks, first: sample && sample.seconds, second: second && second.seconds,
            clip: clip && [clip.start, clip.offset], latency: T.input.latency };
+};
+
+// An external instrument's notes and the clock, sent to a stand-in MIDI
+// output that keeps what it is sent and when it is due.  It clears the
+// song.
+T.midiOutTest = async function midiOutTest() {
+  const checks = {};
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const sent = [];
+  const fake = { name: 'Fake synth', send: (data, at) => sent.push({ data: [...data], at: at === undefined ? performance.now() : at }) };
+  const realMidi = T.midi;
+  T.midi = { outputs: new Map([['fake', fake]]), inputs: new Map() };
+  await T.send(form('clear-song'));
+  await T.send(form('set-tempo', 120), form('set-loop', 0, 16, kw('on'), null),
+               form('add-track', 'Moog', kw('instrument'), kw('external'), kw('values'), [kw('channel'), 3]),
+               form('add-clip', 'Moog', kw('length'), 4, kw('notes'), [[48, 0, 1], [50, 1, 0.5], [52, 2, 0.25]]));
+  await T.synced;
+  const moog = T.song.tracks[0];
+  T.trackId = moog.id;
+  T.detail = 'devices';
+  renderDetail();
+  checks.portListed = Boolean(document.querySelector('[data-ctl="midi-port"] option, select[data-ctl="midi-port"]'));
+  // the output's clock is off for its first moments (headless Chromium:
+  // about 20 ms on the first Play), which this test is not about
+  await T.play(0);
+  await wait(400);
+  T.stop();
+  await wait(300);
+  sent.length = 0;
+  T.setClockPort('Fake synth');
+  renderTransport();
+  checks.clockControl = Boolean(document.querySelector('[data-ctl="clock-out"]'));
+  T.startBeat = 0;
+  await T.play(0);
+  for (let i = 0; i < 600 && T.beat < 3.2; i++) await wait(10);
+  T.stop();
+  await wait(400);
+  const ons = sent.filter((m) => m.data[0] === 0x92);
+  const offs = sent.filter((m) => m.data[0] === 0x82);
+  checks.notesOnChannel3 = ons.map((m) => m.data[1]).join() === '48,50,52';
+  const gaps = [ons[1].at - ons[0].at, ons[2].at - ons[1].at];
+  checks.onTheBeat = gaps.every((g) => Math.abs(g - 500) < 15);
+  const offOf = (pitch, after) => offs.find((m) => m.data[1] === pitch && m.at >= after.at);
+  checks.heldTheirLength = Math.abs(offOf(48, ons[0]).at - ons[0].at - 500) < 5
+    && Math.abs(offOf(50, ons[1]).at - ons[1].at - 250) < 5;
+  checks.clockStarts = sent.length > 1 && sent[0].data[0] === 0xf2 && sent[1].data[0] === 0xfa;
+  const ticks = sent.filter((m) => m.data[0] === 0xf8 && m.at >= ons[0].at - 1 && m.at < ons[0].at + 999);
+  checks.clock24 = Math.abs(ticks.length - 48) <= 1;
+  const tickGaps = ticks.slice(1).map((m, i) => m.at - ticks[i].at);
+  checks.clockEven = tickGaps.every((g) => Math.abs(g - 500 / 24) < 2);
+  checks.clockStops = sent.some((m) => m.data[0] === 0xfc);
+  checks.allNotesOff = sent.some((m) => m.data[0] === 0xb2 && m.data[1] === 123);
+  // played live on the armed track: through to the hardware at once
+  T.armed.clear();
+  T.armed.add(moog.id);
+  const before = sent.length;
+  await T.noteOn(60, 90);
+  T.noteOff(60);
+  const live = sent.slice(before);
+  checks.liveThrough = live.some((m) => m.data.join() === '146,60,90') && live.some((m) => m.data[0] === 0x82 && m.data[1] === 60);
+  // an external track is silent here, on both sides
+  checks.parity = (await T.selfTest(48000 * 2)).different === 0;
+  T.setClockPort('');
+  T.armed.clear();
+  T.midi = realMidi;
+  const failed = Object.entries(checks).filter(([, v]) => !v).map(([k]) => k);
+  return { ok: failed.length === 0, failed, checks, gaps, ticks: ticks.length,
+           latencyMs: Math.round(((engine.ctx.outputLatency || 0) + (engine.ctx.baseLatency || 0)) * 1000) };
 };
 
 async function start() {

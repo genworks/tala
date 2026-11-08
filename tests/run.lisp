@@ -517,6 +517,41 @@ only bounds."
       (search "pad 1 \"Kick\" plays sample \"Voice\""
               (let ((*song* (song-with-pad-sample))) (tala-api::describe-song)))))
 
+(defun test-external ()
+  (let ((song (make-song)))
+    (forms-pass? song "(set-tempo 120)
+                       (add-track \"Moog\" :instrument :external :values (:channel 3))
+                       (add-clip \"Moog\" :length 4 :notes ((48 0 1) (50 1 0.5)))
+                       (add-track \"Bass\")
+                       (add-clip \"Bass\" :length 4 :notes ((36 0 1)))")
+    (check "an external instrument makes no sound here, and the rest plays"
+      (let ((alone (make-song)))
+        (forms-pass? alone "(add-track \"Moog\" :instrument :external) (add-clip \"Moog\" :notes ((48 0 1)))")
+        (and (zerop (peak-of (render-song alone 24000)))
+             (> (peak-of (render-song song 24000)) 0.05d0))))
+    (check "its notes wait in its queue with the clock they fell at"
+      (let* ((engine (lisp-engine (the-object song plan) 48000))
+             (s (double-buffer (engine-state-size engine)))
+             (b (getf (getf (first (engine-placed engine)) :instrument) :state)))
+        ;; one second, as RENDER-PLAN starts it, with the state kept
+        (with-audio-floats
+          (engine-setup s 48000d0)
+          (funcall (engine-init engine) s)
+          (transport-start s 0d0)
+          (funcall (engine-frames engine) s (double-vector (the-object song params))
+                   (double-vector (the-object song score)) *empty-pool*
+                   (double-buffer 48000) (double-buffer 48000) 48000))
+        (and (= 2 (aref s (+ b exs-count)))
+             (equalp (list (aref s (+ b exs-size)) (aref s (+ b exs-size 1)) (aref s (+ b exs-size 3)))
+                     '(0d0 48d0 1d0))
+             ;; the clock adds a frame's worth at a time: near enough
+             (< (abs (- (aref s (+ b exs-size 4)) 1d0)) 1d-9)
+             (= (aref s (+ b exs-size 5)) 50d0))))
+    (check "set-midi-port names the output, and only for an external instrument"
+      (and (forms-pass? song "(set-midi-port \"Moog\" \"USB MIDI\")")
+           (equal "USB MIDI" (getf (getf (first (getf (the-object song spec) :tracks)) :instrument) :port))
+           (search "not an external" (form-error song "(set-midi-port \"Bass\" \"USB MIDI\")"))))))
+
 (defun song-with-sample (&optional stereo)
   (let ((song (make-song)))
     (multiple-value-bind (octets channels) (speech-like 2 stereo)
@@ -1172,6 +1207,7 @@ change: (record-golden).")
   (test-trimming)
   (test-warping)
   (test-pads)
+  (test-external)
   (test-repair)
   (test-recording)
   (test-agent-survives-reload)

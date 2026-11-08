@@ -277,6 +277,7 @@ async function syncOnce() {
   // the input follows the engine to its new program
   connectInput();
   if (T.monitor) node.port.postMessage({ t: 'monitor', on: true });
+  if (T.clockPort) node.port.postMessage({ t: 'clockout', on: true });
 }
 
 // Audio input: one device for the page, a channel of it for each armed
@@ -313,7 +314,68 @@ T.setMonitor = function setMonitor(on) {
   if (engine.node) engine.node.port.postMessage({ t: 'monitor', on });
 };
 
+// MIDI out: external instruments' notes and the clock, from the worklet,
+// each sent timed to when its frame is heard.  The worklet works ahead of
+// the speakers by the output's latency, which is room to send a note an
+// instrument's own latency early.
+T.midi = null;
+T.midiOutputs = () => (T.midi ? [...T.midi.outputs.values()] : []);
+const external = (track) => track && track.instrument && track.instrument.kind === 'external';
+
+function midiOut(track) {
+  const outs = T.midiOutputs();
+  return outs.find((o) => o.name === track.instrument.port) || outs[0] || null;
+}
+
+function midiChannel(track) {
+  return Math.max(0, Math.min(15, Math.round(controlValue(track.instrument, 'channel')) - 1));
+}
+
+T.clockPort = (() => { try { return localStorage.getItem('tala.clockPort') || ''; } catch (e) { return ''; } })();
+const clockOut = () => (T.clockPort && T.midiOutputs().find((o) => o.name === T.clockPort)) || null;
+
+T.setClockPort = function setClockPort(name) {
+  T.clockPort = name;
+  try { localStorage.setItem('tala.clockPort', name); } catch (e) { /* kept for this visit only */ }
+  if (engine.node) engine.node.port.postMessage({ t: 'clockout', on: Boolean(name) });
+};
+
+function sendMidi(message) {
+  const ctx = engine.ctx;
+  const stamp = ctx.getOutputTimestamp();
+  const now = performance.now();
+  // until the output has reported a time, the render's own clock and
+  // the latency it reports stand in for it
+  const heard = stamp.contextTime > 0 && stamp.performanceTime > 0
+    ? (at) => stamp.performanceTime + ((message.frame + at) / ctx.sampleRate - stamp.contextTime) * 1000
+    : (at) => now + ((message.frame + at) / ctx.sampleRate - ctx.currentTime + (ctx.outputLatency || 0) + (ctx.baseLatency || 0)) * 1000;
+  for (const [index, at, pitch, vel, gate] of message.midi) {
+    const track = T.song.tracks[index];
+    const out = track && external(track) && midiOut(track);
+    if (!out) continue;
+    const ch = midiChannel(track);
+    const on = heard(at) - controlValue(track.instrument, 'latency');
+    out.send([0x90 | ch, pitch, vel], Math.max(now, on));
+    out.send([0x80 | ch, pitch, 0], Math.max(now, on + gate * 60000 / T.song.tempo));
+  }
+  const clock = message.ticks.length && clockOut();
+  if (clock) for (const at of message.ticks) clock.send([0xf8], Math.max(now, heard(at)));
+}
+
+// Every external instrument's notes off, now and once more after what
+// was already sent ahead has landed.
+function silenceExternal() {
+  for (const track of T.song.tracks.filter(external)) {
+    const out = midiOut(track);
+    if (!out) continue;
+    const message = [0xb0 | midiChannel(track), 123, 0];
+    out.send(message);
+    out.send(message, performance.now() + 250);
+  }
+}
+
 function heardFromEngine(message) {
+  if (message.midi) { sendMidi(message); return; }
   if (message.rec) { takeNote(message); return; }
   if (message.cap) { takeAudio(message); return; }
   if (T.playing) T.beat = message.beat;
@@ -326,6 +388,13 @@ T.play = async function play(from = T.startBeat) {
   await startAudio();
   T.beat = from;
   T.playing = true;
+  // hardware following the clock: where to start, in sixteenths, then go
+  const clock = clockOut();
+  if (clock) {
+    const at = Math.min(16383, Math.round(from * 4));
+    clock.send([0xf2, at & 0x7f, at >> 7]);
+    clock.send([at ? 0xfb : 0xfa]);
+  }
   engine.node.port.postMessage({ t: 'play', beat: from });
   renderTransport();
 };
@@ -334,6 +403,9 @@ T.stop = function stop() {
   if (T.recording) finishTake();
   T.playing = false;
   if (engine.node) engine.node.port.postMessage({ t: 'stop' });
+  const clock = clockOut();
+  if (clock) clock.send([0xfc]);
+  silenceExternal();
   T.beat = T.startBeat;
   renderTransport();
 };
@@ -546,6 +618,10 @@ T.noteOn = async function noteOn(pitch, velocity = 100) {
   for (const track of targets) {
     const rec = T.recording && T.armed.has(T.song.tracks[track].id);
     engine.node.port.postMessage({ t: 'note', track, pitch, vel: velocity, rec });
+    // played through to the hardware at once, not a quantum later
+    const target = T.song.tracks[track];
+    const out = external(target) && midiOut(target);
+    if (out) out.send([0x90 | midiChannel(target), pitch, velocity]);
   }
 };
 
@@ -555,6 +631,9 @@ T.noteOff = function noteOff(pitch) {
   if (!engine.node) return;
   for (const track of targets) {
     engine.node.port.postMessage({ t: 'noteoff', track, pitch, rec: T.recording });
+    const target = T.song.tracks[track];
+    const out = target && external(target) && midiOut(target);
+    if (out) out.send([0x80 | midiChannel(target), pitch, 0]);
   }
 };
 
@@ -595,6 +674,12 @@ function renderTransport() {
     el('button', { class: T.metronome ? 'on' : '', 'data-ctl': 'metronome', 'data-title': 'Metronome',
                    'data-doc': 'A click on every beat while the song plays, higher on the first of the bar. It is not in an export.',
                    onclick: () => T.toggleMetronome() }, 'Click'),
+    T.midiOutputs().length ? el('select', {
+      'data-ctl': 'clock-out', 'data-title': 'MIDI clock out',
+      'data-doc': 'Send MIDI clock, start and stop to an output, so a drum machine or sequencer there follows the tempo and the transport.',
+      onchange: (e) => T.setClockPort(e.target.value),
+    }, el('option', { value: '' }, 'No sync'),
+       T.midiOutputs().map((o) => el('option', { value: o.name, selected: o.name === T.clockPort }, `Sync: ${o.name}`))) : null,
     el('span', { class: 'readout', id: 'position' }, '1.1.1'),
     el('button', { id: 'back-to-arrangement', hidden: true, 'data-ctl': 'back-to-arrangement',
                    'data-title': 'Back to Arrangement',

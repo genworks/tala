@@ -552,6 +552,37 @@ to, and where it carries on smoothly from the other (GRAIN-START)."
                 (sampler-grains s pool o bus pos end g step)
                 (sampler-plain s pool o bus pos end g))))))))
 
+;;; The external instrument: a hardware synthesizer, or anything else
+;;; listening on a MIDI port.  It makes no sound here.  Its notes wait in
+;;; a queue in its state, each with the CLOCK it fell at, and the worklet
+;;; hands them to the page, which sends them to the port timed to when
+;;; this frame is heard.  The server's render has nothing to send them
+;;; to, and its queue simply fills.
+
+(define-params ex :external
+  (:channel "Channel" :default 1 :min 1 :max 16
+   :doc "The MIDI channel the instrument listens on, 1 to 16.")
+  (:latency "Latency" :default 0 :min 0 :max 200 :unit "ms"
+   :doc "How long the instrument takes to sound after a note reaches it: notes are sent this much early, so it lands with the rest."))
+
+(define-slots exs count)
+
+(defparameter *external-queue* 32
+  "The notes an external instrument holds between handings-over: the 32
+in EXTERNAL-NOTE-ON, which cannot read a special.")
+
+(define-dsp external-note-on ((s :buf) (p :buf) (b :int) (pb :int) (pitch :num) (vel :num) (gate :num)) :nil
+  "PITCH into the instrument's queue with the clock now and GATE in beats,
+-1 for a note played live, which the page has sent already."
+  (let* ((n (ifloor (st exs-count))))
+    (when (< n 32)
+      (let* ((o (+ b exs-size (* 4 n))))
+        (setf (aref s o) (sg g-clock))
+        (setf (aref s (+ o 1)) pitch)
+        (setf (aref s (+ o 2)) vel)
+        (setf (aref s (+ o 3)) gate))
+      (setf (st exs-count) (dfloat (+ n 1))))))
+
 ;;; Effects.  Each takes the bus in place, two slots, left and right.
 
 (define-dsp mix-into ((s :buf) (bus :int) (l :num) (r :num) (wet :num)) :nil
@@ -980,6 +1011,9 @@ function; DOC what it is for."
        (make-device-kind :drums "Drums" :instrument nil 'drum-run
                          (lambda (sr) (declare (ignore sr)) (+ dk-size (* 8 dv-size)))
                          "A drum kit of eight synthesized pads, played by pitches 36 to 43; any pad can also play a sample.")
+       (make-device-kind :external "External" :instrument nil nil
+                         (lambda (sr) (declare (ignore sr)) (+ exs-size (* 4 *external-queue*)))
+                         "A synthesizer or drum machine outside the browser, played over MIDI: its notes go to a MIDI output on a channel. It makes no sound in Tala; hear it through the interface, and record it onto an audio track.")
        (make-device-kind :sampler "Audio" :instrument 'sampler-tick 'sampler-run
                          (lambda (sr) (declare (ignore sr)) (+ sa-size (* 4 sv-size)))
                          "A track of recorded sound: spoken word, field recordings, loops. It plays audio clips, up to four at once.")

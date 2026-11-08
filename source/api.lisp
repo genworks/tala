@@ -347,7 +347,8 @@ from its start."
     (error "There is already a track named ~s." name)))
 
 (define-op add-track (name &key (instrument :synth) values)
-  "A new instrument track NAME playing INSTRUMENT, :synth or :drums,
+  "A new instrument track NAME playing INSTRUMENT, :synth, :drums,
+:sampler (an audio track) or :external (a hardware instrument over MIDI),
 with VALUES, a plist of its controls."
   (edit-song! (song)
               (lambda (spec)
@@ -358,6 +359,20 @@ with VALUES, a plist of its controls."
                        (track (new-track spec name device (length (getf spec :returns)))))
                   (put! spec :tracks (append (getf spec :tracks) (list track)))
                   (list :track name :index (1- (length (getf spec :tracks))))))))
+
+(define-op set-midi-port (track port)
+  "The MIDI output TRACK's external instrument plays, by the name the
+page lists it under; nil for the first the browser offers."
+  (edit-song! (song)
+              (lambda (spec)
+                (let* ((found (find-track spec track))
+                       (kit (getf found :instrument)))
+                  (unless (eq (getf kit :kind) :external)
+                    (error "~s is not an external instrument's track." (getf found :name)))
+                  (unless (or (null port) (stringp port))
+                    (error "A MIDI port is named by a string, not ~s." port))
+                  (if port (put! kit :port port) (remf kit :port))
+                  (list :track (getf found :name) :port port)))))
 
 (define-op add-return (name)
   "A new return track NAME; every track gets a send to it, at -60 dB (off)."

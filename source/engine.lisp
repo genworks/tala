@@ -341,6 +341,7 @@ numbered INDEX, with PITCH VEL GATE."
     (ecase (getf instrument :kind)
       (:synth `(synth-note-on s p ,b ,pb pitch vel gate))
       (:drums `(drum-note-on s p sc ,b ,pb ,index pitch vel gate))
+      (:external `(external-note-on s p ,b ,pb pitch vel gate))
       ;; a clip's event carries its region where a note has a pitch
       (:sampler `(sampler-start s sc ,b pitch vel gate 0d0)))))
 
@@ -359,6 +360,7 @@ numbered INDEX, with PITCH VEL GATE."
     (case (getf instrument :kind)
       (:sampler `(sampler-run s pool ,b ,bus))
       (:drums `(drum-run s p pool ,b ,pb ,bus))
+      (:external nil)
       (t `(,(device-kind-run (device-kind (getf instrument :kind))) s p ,b ,pb ,bus)))))
 
 (defun device-run-form (device own-bus placed)
@@ -618,6 +620,7 @@ PARAM-SIZE are its arrays' lengths, PLACED its layout."
       else { this.flushCapture(true); this.capturing = false; }
       break;
     case 'monitor': this.monitor = m.on; break;
+    case 'clockout': this.clockOut = m.on; break;
     case 'arrange':
       for (let i = 0; i < TRACKS; i++) {
         if (m.track < 0 || m.track === i) { sessionArrange(s, TRACK_STATE[i]); engineNoteOff(s, i, -1); }
@@ -651,11 +654,33 @@ PARAM-SIZE are its arrays' lengths, PLACED its layout."
     this.capN = 0;
     this.capBeats = [];
   }
+  // the external instruments' notes and the MIDI clock's ticks of this
+  // quantum, each AT frames into it, for the page to send
+  handOver(clock0, n) {
+    const s = this.s;
+    const bpf = s[G_BPF];
+    let midi = null;
+    for (const [track, b] of EXTERNAL) {
+      const count = s[b + EXS_COUNT];
+      for (let i = 0; i < count; i++) {
+        const o = b + EXS_SIZE + 4 * i;
+        if (s[o + 3] >= 0) (midi = midi || []).push([track, (s[o] - clock0) / bpf, s[o + 1], s[o + 2], s[o + 3]]);
+      }
+      s[b + EXS_COUNT] = 0;
+    }
+    let ticks = null;
+    if (this.clockOut && s[G_PLAYING] > 0.5 && bpf > 0) {
+      for (let k = Math.ceil(clock0 * 24); k < s[G_CLOCK] * 24; k++) (ticks = ticks || []).push((k / 24 - clock0) / bpf);
+    }
+    if (midi || ticks) this.port.postMessage({ midi: midi || [], ticks: ticks || [], frame: currentFrame, n });
+  }
   process(inputs, outputs) {
     const out = outputs[0];
     const n = out[0].length;
     const beat = this.s[G_BEAT];
+    const clock0 = this.s[G_CLOCK];
     this.render(out, n);
+    this.handOver(clock0, n);
     const input = inputs[0] || [];
     const inLeft = input[0];
     const inRight = input[1] || input[0];
@@ -724,6 +749,13 @@ used twice in a context: (values js processor-name)."
                              tr-mode tr-slot tr-queued tr-origin)
                      (format out "const TRACK_STATE = [~{~d~^, ~}];~%"
                              (mapcar (lambda (track) (getf track :state)) (tracks-of-kind placed :midi)))
+                     (format out "const G_BPF = ~d, EXS_COUNT = ~d, EXS_SIZE = ~d;~%" g-bpf exs-count exs-size)
+                     (format out "const EXTERNAL = [~{[~{~d~^, ~}]~^, ~}];~%"
+                             (loop for track in (tracks-of-kind placed :midi)
+                                   for i from 0
+                                   for instrument = (getf track :instrument)
+                                   when (eq (getf instrument :kind) :external)
+                                     collect (list i (getf instrument :state))))
                      (format out "const METERS = [~{~d~^, ~}];~%"
                              (mapcar (lambda (track) (+ (getf track :state) tr-peak)) placed))
                      (write-string *worklet-class* out)
