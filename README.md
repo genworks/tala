@@ -74,6 +74,12 @@ like any other, so the grid, too, rebuilds nothing.  The Lisp renderer
 and the worklet both take a script of launches at given frames, which is
 how a performance is held to the same frames on both sides.
 
+**Undo takes back one edit, not the song.**  The person and the
+prompt's model can edit at once, so an undo entry records the edit, the
+song before and after it, and undoing it is a three-way merge that takes
+back that edit's own changes and leaves everything done since.  A prompt
+is one entry of its own edits only.
+
 **One door.**  The page drives the song by sending forms of the Lisp API
 (`source/api.lisp`, `docs/api.md`), so nothing can be done with the
 mouse that a program or the model cannot do.  What the model may run is

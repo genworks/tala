@@ -182,14 +182,13 @@ cost anyone their prompt."
   (let* ((song (session-song session))
          (began (get-universal-time))
          (*ui-actions* nil)
-         (*journal* t)
+         (*journal* (list nil))
          (heard '())
-         state history before answer)
+         state history answer)
     (bt:with-lock-held ((session-lock session))
       (let ((*song* song))
         (setf state (tala-api::describe-song)
-              history (reverse (the-object song prompt-log))
-              before (the-object song spec))))
+              history (reverse (the-object song prompt-log)))))
     (unwind-protect
          (setf answer
                (sexp-agent:ask *agent* prompt
@@ -208,8 +207,10 @@ cost anyone their prompt."
                                                     (values (blank-png) (answer-text value)))))))
       ;; however it ended, what ran comes back as one undo
       (bt:with-lock-held ((session-lock session))
-        (unless (eq before (the-object song spec))
-          (push-undo! song before))
+        ;; its own edits, and only those: an edit made on the page while
+        ;; it ran is the page's own undo
+        (when (car *journal*)
+          (push-undo! song (cons :group (car *journal*))))
         (when answer
           (the-object song
             (set-slot! :prompt-log

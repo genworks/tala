@@ -416,12 +416,8 @@ and two bars for the tails to ring out."
   (let ((text (body-field req "text"))
         (session (request-session req)))
     (bt:with-lock-held ((session-lock session))
-      (let ((*song* (session-song session))
-            (spec (read-song-text text)))
-        (edit-song! *song* (lambda (old)
-                             (declare (ignore old))
-                             nil))
-        (the-object *song* (set-slot! :spec spec))
+      (let ((*song* (session-song session)))
+        (replace-spec! *song* (read-song-text text))
         (json-text (obj "song" (song-json *song*)))))))
 
 (defvar *tala-publishers* nil

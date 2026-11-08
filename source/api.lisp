@@ -873,8 +873,14 @@ song's time, replacing any lane it had."
 ;;; Undo.
 
 (define-op undo ()
-  "Take back the last change, or the whole of the last prompt."
-  (list :undone (undo-song! (song))))
+  "Take back the last change, or the whole of the last prompt.  Within a
+prompt, after it has made a change, the last change it made."
+  (if (and *journal* (car *journal*))
+      ;; the prompt correcting itself: its own edits are not on the list yet
+      (let ((song (song)))
+        (the-object song (set-slot! :spec (revert-entry (pop (car *journal*)) (the-object song spec))))
+        (list :undone t))
+      (list :undone (undo-song! (song)))))
 
 (define-op redo ()
   "Put back what undo took."

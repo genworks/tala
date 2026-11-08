@@ -565,6 +565,78 @@ and FORMS run on it."
         (and (equal (reverse *ui-actions*) '((:launch 0 0) (:scene 1) (:stop -1) (:arrange 0)))
              (= depth (length (the-object song undo-entries))))))))
 
+(defun tracks-of (song)
+  (mapcar (lambda (track) (getf track :name)) (getf (the-object song spec) :tracks)))
+
+(defun track-spec (song name)
+  (find name (getf (the-object song spec) :tracks) :key (lambda (track) (getf track :name)) :test #'string=))
+
+(defun prompt-with-person (song prompt-forms person-forms)
+  "A prompt on SONG whose model runs PROMPT-FORMS, while the person, on
+the page, runs PERSON-FORMS between the model's two rounds."
+  (call-with-stub-model
+   (list (format nil "Doing it.~%```lisp~%~a~%(song-info)~%```" prompt-forms)
+         (format nil "Done.~%```lisp~%```"))
+   (lambda (requests)
+     (declare (ignore requests))
+     (let ((saved (fdefinition 'sexp-agent::call)))
+       ;; the person edits while the model is thinking about round two
+       (setf (fdefinition 'sexp-agent::call)
+             (let ((rounds 0))
+               (lambda (agent messages &key session-id)
+                 (when (= 2 (incf rounds))
+                   (let ((*journal* nil)) (forms-pass? song person-forms)))
+                 (funcall saved agent messages :session-id session-id))))
+       (unwind-protect (prompt-song (make-session "both" song) "Go")
+         (setf (fdefinition 'sexp-agent::call) saved))))))
+
+(defun test-undo-with-two-editors ()
+  (check "the merge: a change the edit made is taken back, a later one stays"
+    (equal (merge3 '(:a 1 :b 2) '(:a 1 :b 9) '(:a 0 :b 1)) '(:a 0 :b 9)))
+  (check "the merge: things are matched by id, and what the edit removed comes back in place"
+    (equal (merge3 '((:id 1 :x 1) (:id 3 :x 3))
+                   '((:id 1 :x 5) (:id 3 :x 3) (:id 4 :x 4))
+                   '((:id 1 :x 1) (:id 2 :x 2) (:id 3 :x 3)))
+           '((:id 1 :x 5) (:id 2 :x 2) (:id 3 :x 3) (:id 4 :x 4))))
+  (let ((song (make-song)))
+    (forms-pass? song "(add-track \"A\") (add-track \"B\")")
+    (prompt-with-person song
+                        "(set-tempo 150) (add-track \"P\") (delete-track \"A\")"
+                        "(set-track \"B\" :gain -7) (add-track \"U\")")
+    (check "both editors' work is there after the prompt"
+      (and (equal (tracks-of song) '("B" "P" "U")) (= 150 (the-object song tempo))))
+    (forms-pass? song "(undo)")
+    (check "undoing the prompt takes back only the prompt's edits"
+      (and (equal (tracks-of song) '("A" "B" "U"))
+           (= 120 (the-object song tempo))
+           (= -7 (getf (track-spec song "B") :gain))))
+    (forms-pass? song "(redo)")
+    (check "redo puts the prompt's edits back, and the person's stay"
+      (and (equal (tracks-of song) '("B" "P" "U"))
+           (= 150 (the-object song tempo))
+           (= -7 (getf (track-spec song "B") :gain))))
+    (forms-pass? song "(undo) (undo)")
+    (check "then the person's own edit undoes on its own"
+      (and (equal (tracks-of song) '("A" "B")) (= 120 (the-object song tempo))
+           (= -7 (getf (track-spec song "B") :gain)))))
+  (let ((song (make-song)))
+    (prompt-with-person song "(add-track \"P\")" "(set-track \"P\" :gain -3)")
+    (forms-pass? song "(undo)")
+    (check "a thing the prompt made and the person then worked on is kept"
+      (equal (tracks-of song) '("P"))))
+  (let ((song (make-song)))
+    (forms-pass? song "(add-track \"A\")")
+    (call-with-stub-model
+     (list (format nil "Trying.~%```lisp~%(add-track \"Wrong\")~%(undo)~%(add-track \"Right\")~%```"))
+     (lambda (requests)
+       (declare (ignore requests))
+       (prompt-song (make-session "self" song) "Go")))
+    (check "a prompt's own undo takes back its own last edit, not an older one"
+      (equal (tracks-of song) '("A" "Right")))
+    (forms-pass? song "(undo)")
+    (check "and the prompt is still one undo"
+      (equal (tracks-of song) '("A")))))
+
 (defun test-agent-survives-reload ()
   (check "a reload keeps where the agent was pointed"
     (let ((saved (sexp-agent:agent-messages-url *agent*)))
@@ -723,6 +795,7 @@ change: (record-golden).")
   (test-reference)
   (test-prompt)
   (test-reading-reaches-the-model)
+  (test-undo-with-two-editors)
   (test-golden)
   (let ((failed (remove-if #'cdr *checks*)))
     (values (reverse (mapcar #'car failed)) (length *checks*))))

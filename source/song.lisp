@@ -370,11 +370,24 @@ audio regions, as the engine reads them (engine.lisp)."
 
 ;;; Edits.  One function makes every change.
 
-(defparameter *undo-depth* 200 "Song states kept for undo.")
+;;; Undo.  Two people can edit one song at once: the person on the page
+;;; and the prompt's model, whose forms run for a minute while the page
+;;; stays live.  So an undo entry is not a copy of the song to go back
+;;; to, which would take back whatever else happened since; it is an
+;;; edit, (:edit old new), and undoing it takes back only what changed
+;;; from OLD to NEW, by a three-way merge into the song as it is now
+;;; (merge3).  When nothing else has happened since, that is exactly OLD.
+;;; A prompt's edits are one entry, (:group edit...), newest first.
+;;;
+;;; Undoing is itself an edit, from the song as it was to the song as it
+;;; is, and that edit is what redo takes back, by the same merge.  Specs
+;;; are never changed once set, so an entry shares them, not copies.
+
+(defparameter *undo-depth* 200 "Edits kept for undo.")
 
 (defvar *journal* nil
-  "True while a prompt runs: its forms come back as one undo, which
-the prompt's own ending pushes.")
+  "While a prompt runs, a cons whose car collects its edits, newest
+first: the prompt's ending makes them one undo.")
 
 (defun edit-song! (song change)
   "CHANGE, a function of a private copy of the spec, applied: what it
@@ -382,36 +395,135 @@ returned.  An error leaves the song as it was."
   (let* ((old (the-object song spec))
          (new (copy-tree old))
          (result (funcall change new)))
-    (unless *journal*
-      (push-undo! song old))
+    (if *journal*
+        (push (list :edit old new) (car *journal*))
+        (push-undo! song (list :edit old new)))
     (the-object song (set-slot! :spec new))
     result))
 
-(defun push-undo! (song old)
-  (let ((entries (cons old (the-object song undo-entries))))
+(defun replace-spec! (song spec)
+  "SPEC for SONG's whole spec, as one edit."
+  (push-undo! song (list :edit (the-object song spec) spec))
+  (the-object song (set-slot! :spec spec)))
+
+(defun push-undo! (song entry)
+  "ENTRY on the undo list; a new edit forgets what could be redone."
+  (let ((entries (cons entry (the-object song undo-entries))))
     (the-object song (set-slot! :undo-entries
                                 (if (> (length entries) *undo-depth*)
                                     (subseq entries 0 *undo-depth*)
                                     entries)))
     (the-object song (set-slot! :redo-entries nil))))
 
+(defun revert-entry (entry current)
+  "The spec CURRENT with ENTRY's change taken back, and the entry that
+would take that back in turn: (values spec mirror)."
+  (case (car entry)
+    (:edit
+     (destructuring-bind (old new) (rest entry)
+       (let ((back (if (eq current new) old (merge3 new current old))))
+         (values back (list :edit current back)))))
+    (:group
+     ;; newest first; the mirrors come out newest first too, for redo
+     ;; takes back the last of them first
+     (let ((spec current) (mirrors '()))
+       (dolist (edit (rest entry))
+         (multiple-value-bind (back mirror) (revert-entry edit spec)
+           (push mirror mirrors)
+           (setf spec back)))
+       (values spec (cons :group mirrors))))
+    ;; an entry from before edits were pairs: a copy of the song
+    (t (revert-entry (list :edit entry current) current))))
+
 (defun undo-song! (song)
-  "Back one change; true when there was one."
+  "Back one change, leaving anything done since it; true when there was one."
   (let ((entries (the-object song undo-entries)))
     (when entries
-      (the-object song (set-slot! :redo-entries (cons (the-object song spec) (the-object song redo-entries))))
-      (the-object song (set-slot! :spec (first entries)))
-      (the-object song (set-slot! :undo-entries (rest entries)))
-      t)))
+      (multiple-value-bind (spec mirror) (revert-entry (first entries) (the-object song spec))
+        (the-object song (set-slot! :undo-entries (rest entries)))
+        (the-object song (set-slot! :redo-entries (cons mirror (the-object song redo-entries))))
+        (the-object song (set-slot! :spec spec))
+        t))))
 
 (defun redo-song! (song)
-  "Forward one change; true when there was one."
+  "Forward one change: the undo before it taken back; true when there was one."
   (let ((entries (the-object song redo-entries)))
     (when entries
-      (the-object song (set-slot! :undo-entries (cons (the-object song spec) (the-object song undo-entries))))
-      (the-object song (set-slot! :spec (first entries)))
-      (the-object song (set-slot! :redo-entries (rest entries)))
-      t)))
+      (multiple-value-bind (spec mirror) (revert-entry (first entries) (the-object song spec))
+        (the-object song (set-slot! :redo-entries (rest entries)))
+        (the-object song (set-slot! :undo-entries (cons mirror (the-object song undo-entries))))
+        (the-object song (set-slot! :spec spec))
+        t))))
+
+;;; The merge.  OURS is the song now, BASE what an edit made, THEIRS what
+;;; it started from: the result is OURS with the edit's own changes taken
+;;; back.  Where OURS changed the same thing since, OURS wins, since it
+;;; is the later word.  Plists merge key by key; a list of plists with
+;;; ids (tracks, devices, clips, scenes, samples) merges thing by thing,
+;;; matched by id; anything else (notes, points, sends) is one value.
+
+(defun plist? (x)
+  (and (listp x)
+       (evenp (length x))
+       (loop for (k) on x by #'cddr always (keywordp k))))
+
+(defun id-list? (x)
+  (and (listp x)
+       (every (lambda (e) (and (consp e) (plist? e) (getf e :id))) x)))
+
+(defun merge3 (base ours theirs)
+  "OURS with the changes from BASE to THEIRS made, where OURS has not
+changed the same thing since BASE."
+  (cond ((equal ours base) theirs)
+        ((or (equal theirs base) (equal ours theirs)) ours)
+        ((and (consp ours) (consp theirs) (id-list? base) (id-list? ours) (id-list? theirs))
+         (merge-things base ours theirs))
+        ((and (consp ours) (consp theirs) (plist? base) (plist? ours) (plist? theirs))
+         (merge-plists base ours theirs))
+        (t ours)))
+
+(defun merge-plists (base ours theirs)
+  (let ((keys (remove-duplicates (append (loop for (k) on ours by #'cddr collect k)
+                                         (loop for (k) on theirs by #'cddr collect k))
+                                 :from-end t))
+        (absent '#:absent))
+    (loop for key in keys
+          for value = (merge3 (getf base key absent) (getf ours key absent) (getf theirs key absent))
+          unless (eq value absent)
+            append (list key value))))
+
+(defun merge-things (base ours theirs)
+  (flet ((by-id (list id) (find id list :key (lambda (e) (getf e :id))))
+         (ids (list) (mapcar (lambda (e) (getf e :id)) list)))
+    (let* ((kept
+             ;; what OURS has, merged; what the edit added and OURS left as
+             ;; it was goes, but not what OURS has worked on since
+             (loop for mine in ours
+                   for id = (getf mine :id)
+                   for was = (by-id base id)
+                   for then = (by-id theirs id)
+                   nconc (cond ((and was then) (list (merge3 was mine then)))
+                               ((and was (not then)) (unless (equal was mine) (list mine)))
+                               (t (list mine)))))
+           ;; what the edit took away comes back
+           (restored (remove-if (lambda (e) (or (by-id base (getf e :id)) (by-id ours (getf e :id))))
+                                theirs))
+           (order (if (equal (ids ours) (ids base))
+                      ;; OURS kept the order, so the edit's order stands
+                      (ids theirs)
+                      (ids ours)))
+           (result (append (remove-if-not (lambda (e) (member (getf e :id) order)) kept)
+                           (remove-if (lambda (e) (member (getf e :id) order)) kept))))
+      (setf result (stable-sort (copy-list result) #'<
+                                :key (lambda (e) (or (position (getf e :id) order) most-positive-fixnum))))
+      ;; each restored thing after the one before it in THEIRS
+      (dolist (thing restored result)
+        (let* ((at (position (getf thing :id) theirs :key (lambda (e) (getf e :id))))
+               (before (loop for i from (1- at) downto 0
+                             for id = (getf (nth i theirs) :id)
+                             when (by-id result id) return id))
+               (place (if before (1+ (position before result :key (lambda (e) (getf e :id)))) 0)))
+          (setf result (append (subseq result 0 place) (list thing) (nthcdr place result))))))))
 
 (defun put! (plist key value)
   "KEY set to VALUE in PLIST in place, which may be held by something

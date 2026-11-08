@@ -346,16 +346,19 @@ T.sessionTest = async function sessionTest() {
   const parity = await T.selfTest(48000 * 6, script);
   checks.parity = parity.ok;
   checks.parityHeard = parity.peak > 0.05;
-  // the buttons
+  // the buttons; the engine reports what it is doing a few times a
+  // second, so wait for the report rather than for a time
+  const until = async (test, ms = 5000) => {
+    for (let waited = 0; waited < ms && !test(); waited += 50) await wait(50);
+    return test();
+  };
   await T.launchScene(0);
-  await wait(700);
   const lead = T.song.tracks.findIndex((t) => t.name === 'Lead');
-  checks.launched = T.sessionState && T.sessionState[lead][0] > 0.5 && T.sessionState[lead][1] === 1;
-  checks.playingShown = Boolean(document.querySelector('.slot.playing'));
-  checks.arrangeButton = !$('#back-to-arrangement').hidden;
+  checks.launched = await until(() => T.sessionState && T.sessionState[lead][0] > 0.5 && T.sessionState[lead][1] === 1);
+  checks.playingShown = await until(() => Boolean(document.querySelector('.slot.playing')));
+  checks.arrangeButton = await until(() => !$('#back-to-arrangement').hidden);
   T.backToArrangement();
-  await wait(500);
-  checks.backToTimeline = T.sessionState && T.sessionState.every((s) => s[0] < 0.5);
+  checks.backToTimeline = await until(() => T.sessionState && T.sessionState.every((s) => s[0] < 0.5));
   T.stop();
   await T.send(form('arrange-scene', 'Drop', 8, kw('length'), 8));
   checks.arranged = T.song.tracks.every((t) => t.clips.some((c) => c.scene === null && c.start === 8));

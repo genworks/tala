@@ -243,7 +243,10 @@ with noise rising, then everything landing on a bar line.
 ## Undo
 
 - `(undo)`, `(redo)` — one change.  A prompt's forms are one undo, so
-  "undo that" is `(undo)` once.
+  "undo that" is `(undo)` once.  The person may go on editing while you
+  work; undoing your prompt takes back only your changes, and theirs
+  stay.  Within your own block, `(undo)` after a change takes back your
+  last change.
 
 ## Teaching
 
