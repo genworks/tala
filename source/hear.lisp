@@ -205,9 +205,6 @@ line at each frame of BARS-AT and at 100 Hz, 1 kHz and 10 kHz."
 
 (defparameter *most-heard-seconds* 45 "The longest stretch one (hear) renders.")
 
-(defun song-beats-per-bar (spec)
-  (* (getf spec :numerator) (/ 4 (getf spec :denominator))))
-
 (defun scene-script (spec row)
   "What launching scene ROW at the first frame is, track by track: a
 slot's clip, or a stop for an empty one."

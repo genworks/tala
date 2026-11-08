@@ -235,6 +235,7 @@ function renderDetail() {
     bar.append(
       field('Length', clip.length, 'length', 'How long the clip runs on the timeline, in beats.'),
       field('Repeat', clip.loop || clip.length, 'loop', 'The notes repeat every this many beats.'),
+      quantizeControl(track, clip),
       el('span', { class: 'turn-note' }, 'Double-click: add or remove. Drag: move. Right edge: length. Alt-drag: velocity.'));
   }
   box.replaceChildren(bar, el('div', { id: 'detail-body' }));
@@ -349,6 +350,16 @@ function renderAudioClip(clip) {
     const px = e.clientX - canvas.getBoundingClientRect().left;
     canvas.style.cursor = Math.abs(px - x(from)) < 10 || Math.abs(px - x(to)) < 10 ? 'ew-resize' : 'default';
   });
+}
+
+function quantizeControl(track, clip) {
+  const grid = el('select', {}, [['1/16', 0.25], ['1/8', 0.5], ['1/4', 1], ['1/8 triplet', 1 / 3]].map(([label, value]) =>
+    el('option', { value }, label)));
+  return el('span', { class: 'track-buttons', 'data-title': 'Quantize',
+                      'data-doc': 'Move the notes onto the grid chosen: a take played by hand, tightened.' },
+    grid,
+    el('button', { 'data-ctl': 'quantize-notes',
+                   onclick: () => T.send(form('quantize-notes', track.name, clip.id, +grid.value)) }, 'Quantize'));
 }
 
 // The piano roll.

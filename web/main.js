@@ -119,6 +119,7 @@ document.addEventListener('keydown', (e) => {
   }
   const ctrl = e.ctrlKey || e.metaKey;
   const key = e.key.toLowerCase();
+  if (e.key === 'F9') { e.preventDefault(); T.record(); return; }
   if (ctrl) {
     if (key === 'z') { e.preventDefault(); T.send(form(e.shiftKey ? 'redo' : 'undo')); }
     else if (key === 'y') { e.preventDefault(); T.send(form('redo')); }
@@ -195,11 +196,12 @@ T.selfTest = async function selfTest(frames = 48000, script = []) {
   await loadModule(context, song.processor);
   const node = new AudioWorkletNode(context, song.processor, {
     numberOfInputs: 0, outputChannelCount: [2],
-    processorOptions: { params: song.params, score: song.score, pool: T.pool, playing: true, beat: 0, script },
+    processorOptions: { params: engineParams(song), score: song.score, pool: T.pool, playing: true, beat: 0, script },
   });
   node.connect(context.destination);
   const rendered = await context.startRendering();
-  const scripted = script.length ? `&script=${encodeURIComponent(JSON.stringify(script))}` : '';
+  const scripted = (script.length ? `&script=${encodeURIComponent(JSON.stringify(script))}` : '')
+    + (T.metronome ? '&metronome=1' : '');
   const buffer = await (await fetch(`/tala/api/render.f32?s=${encodeURIComponent(T.session)}&frames=${frames}${scripted}`)).arrayBuffer();
   const server = new Float32Array(buffer);
   const left = rendered.getChannelData(0);
@@ -401,6 +403,58 @@ T.sessionTest = async function sessionTest() {
   checks.arranged = T.song.tracks.every((t) => t.clips.some((c) => c.scene === null && c.start === 8));
   const failed = Object.entries(checks).filter(([, v]) => !v).map(([k]) => k);
   return { ok: failed.length === 0, failed, checks, frames: parity.frames, different: parity.different };
+};
+
+// A take played as a person plays one, through the same doors a MIDI
+// keyboard uses, with the metronome on.  It clears the song.
+T.recordTest = async function recordTest() {
+  const checks = {};
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const until = async (test, ms = 8000) => {
+    for (let waited = 0; waited < ms && !test(); waited += 10) await wait(10);
+    return test();
+  };
+  await T.send(form('clear-song'));
+  await T.send(form('set-tempo', 120), form('set-loop', 0, 16), form('add-track', 'Keys'));
+  await T.synced;
+  T.trackId = T.song.tracks[0].id;
+  T.armed.clear();
+  T.toggleMetronome();
+  const parity = await T.selfTest(48000 * 3);
+  checks.metronomeParity = parity.ok && parity.peak > 0.1;
+  T.startBeat = 0;
+  await T.record();
+  checks.recording = T.recording && T.playing && T.armed.size === 1;
+  const play = async (pitch, at, until_) => {
+    await until(() => T.beat >= at);
+    T.noteOn(pitch, 100);
+    await until(() => T.beat >= until_);
+    T.noteOff(pitch);
+  };
+  await play(60, 0.5, 1.0);
+  await play(64, 1.5, 2.25);
+  await until(() => T.beat >= 2.5);
+  await T.record();
+  await chain;
+  T.stop();
+  T.toggleMetronome();
+  const clip = T.song.tracks[0].clips[0];
+  checks.take = Boolean(clip) && clip.notes.length === 2 && clip.start === 0 && clip.length === 4;
+  // the page's clock is read every few milliseconds, so a note goes a
+  // little after the beat asked for; it lands earlier by the output's
+  // latency, which a player hears the beat late by
+  const ctx = engine.ctx;
+  const late = ((ctx.outputLatency || 0) + (ctx.baseLatency || 0)) * T.song.tempo / 60;
+  const near = (start, beat) => start >= beat - late - 0.02 && start < beat - late + 0.25;
+  checks.landedWhere = Boolean(clip) && near(clip.notes[0][1], 0.5) && near(clip.notes[1][1], 1.5);
+  checks.latencyCompensated = late >= 0;
+  checks.lengths = Boolean(clip) && clip.notes[0][2] > 0.3 && clip.notes[0][2] < 0.75;
+  await T.send(form('quantize-notes', 'Keys', clip.id, 0.5));
+  const tight = T.song.tracks[0].clips[0];
+  checks.quantized = tight.notes[0][1] === 0.5 && tight.notes[1][1] === 1.5;
+  checks.oneUndo = (await T.send(form('undo'), form('undo'))).ok && T.song.tracks[0].clips.length === 0;
+  const failed = Object.entries(checks).filter(([, v]) => !v).map(([k]) => k);
+  return { ok: failed.length === 0, failed, checks, notes: clip && clip.notes };
 };
 
 async function start() {

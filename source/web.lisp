@@ -187,6 +187,7 @@ point; the gate as it stands."
                            collect (track-json track place i))
            "master" (track-json (getf spec :master) (first (last placed)) 0)
            "processor" processor
+           "metronomeParam" gp-metronome
            "samples" (samples-json (getf spec :samples))
            "poolStamp" (fnv-hex (pool-key (getf spec :samples)))
            "params" (the-object song params)
@@ -397,7 +398,9 @@ and two bars for the tails to ring out."
                                      (list (elt e 0) (intern (string-upcase (elt e 1)) :keyword)
                                            (elt e 2) (if (> (length e) 3) (elt e 3) 0)))
                              (yason:parse text))))))
-    (multiple-value-bind (left right) (render-song song frames :from from :script script)
+    (multiple-value-bind (left right)
+        (render-song song frames :from from :script script
+                                 :metronome (equal "1" (net.aserve:request-query-value "metronome" req)))
       (float32-octets left right))))
 
 (defun handle-sample (req)

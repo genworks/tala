@@ -155,6 +155,12 @@ look for:
   The drum kit's pads are pitches 36 to 43, in the order under
   `:drums` below.
 - `(transpose-notes track clip semitones)`.
+- `(quantize-notes track clip grid &key strength)` — note starts moved to
+  the nearest line of `grid` beats; `:strength 0.5` moves them halfway,
+  keeping some of the player's feel.
+- `(record-notes track notes &key name quantize)` — a take, notes with
+  starts in beats of the song, made a clip over the bars they fall in.
+  The page records a person's playing with it; you will rarely need it.
 
 ## The session: scenes and launching
 

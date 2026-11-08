@@ -822,6 +822,54 @@ The drum kit's pads are pitches 36 to 43."
                                      (if (char= c #\X) accent velocity)))))
     (tala-api::add-notes track clip notes)))
 
+(define-op record-notes (track notes &key name quantize)
+  "A take: NOTES as played, each (pitch start length velocity) with START
+in beats of the song, made a new clip on TRACK spanning the bars they
+fall in.  QUANTIZE, a grid in beats (0.25 a sixteenth), moves each start
+to the nearest line.  How the page keeps what was played while
+recording."
+  (unless (and (listp notes) notes)
+    (error "A take is a list of notes, (pitch start length velocity) each; this one is empty."))
+  (edit-song! (song)
+              (lambda (spec)
+                (let* ((found (find-track spec track))
+                       (bar (song-beats-per-bar spec))
+                       (played (mapcar #'note-spec notes))
+                       (grid (and quantize (realp quantize) (plusp quantize) quantize))
+                       (placed (if grid
+                                   (mapcar (lambda (n) (list* (first n) (* grid (round (second n) grid)) (cddr n))) played)
+                                   played))
+                       (from (* bar (floor (reduce #'min placed :key #'second) bar)))
+                       (to (* bar (max (1+ (floor from bar))
+                                       (ceiling (reduce #'max placed :key (lambda (n) (+ (second n) (third n)))) bar))))
+                       (clip (list :id (next-id! spec) :name (or name "Take")
+                                   :start from :length (- to from) :loop nil
+                                   :notes (mapcar (lambda (n) (list* (first n) (- (second n) from) (cddr n)))
+                                                  (sort placed #'< :key #'second)))))
+                  (unless (getf found :instrument)
+                    (error "A take goes on an instrument track; ~s is not one." (getf found :name)))
+                  (when (eq (getf (getf found :instrument) :kind) :sampler)
+                    (error "~s is an audio track: notes go on a synth or drum track." (getf found :name)))
+                  (put! found :clips (append (getf found :clips) (list clip)))
+                  (list :clip (getf clip :id) :start from :length (- to from) :notes (length placed))))))
+
+(define-op quantize-notes (track clip grid &key (strength 1))
+  "A clip's note starts moved toward the nearest line of GRID beats (0.25
+a sixteenth, 0.5 an eighth); STRENGTH 1 all the way, 0.5 halfway, which
+keeps some of the feel."
+  (unless (and (realp grid) (plusp grid))
+    (error "The grid is a number of beats, such as 0.25 for sixteenths, not ~s." grid))
+  (edit-song! (song)
+              (lambda (spec)
+                (let ((c (find-clip (find-track spec track) clip))
+                      (s (max 0 (min 1 strength))))
+                  (put! c :notes (mapcar (lambda (n)
+                                           (let* ((start (second n))
+                                                  (line (* grid (round start grid))))
+                                             (list* (first n) (+ start (* s (- line start))) (cddr n))))
+                                         (getf c :notes)))
+                  (list :clip (getf c :id) :grid grid :strength s)))))
+
 (define-op transpose-notes (track clip semitones)
   "Every note of a clip moved by SEMITONES."
   (edit-song! (song)

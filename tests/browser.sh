@@ -21,6 +21,8 @@ echo "== page"
 timeout 120 node "$DIR/probe.js" "$URL" "${SHOT_DIR:+$SHOT_DIR/page.png}" 'TALA.uiTest()' || status=1
 echo "== session"
 timeout 120 node "$DIR/probe.js" "$BASE/tala/?s=session-test-$$" "${SHOT_DIR:+$SHOT_DIR/session.png}" 'TALA.sessionTest()' || status=1
+echo "== recording"
+timeout 120 node "$DIR/probe.js" "$BASE/tala/?s=record-test-$$" "${SHOT_DIR:+$SHOT_DIR/record.png}" 'TALA.recordTest()' || status=1
 echo "== samples"
 timeout 120 node "$DIR/probe.js" "$BASE/tala/?s=sample-test-$$" "${SHOT_DIR:+$SHOT_DIR/samples.png}" 'TALA.sampleTest()' || status=1
 exit $status

@@ -43,6 +43,10 @@ a { color: inherit; text-decoration: none; }
 }
 #tempo { width: 66px; text-align: right; }
 #play.on { background: var(--accent2); border-color: var(--accent2); color: #04211e; }
+#record.rec { color: var(--danger); }
+#record.on { background: var(--danger); border-color: var(--danger); color: #fff; }
+.track-buttons button.arm { color: var(--danger); }
+.track-buttons button.arm.on { background: var(--danger); border-color: var(--danger); color: #fff; }
 
 #app {
   display: grid; grid-template-columns: 170px minmax(0, 1fr) 330px;

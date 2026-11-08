@@ -237,7 +237,7 @@ async function syncOnce() {
   if (!engine.ctx) return;
   const song = T.song;
   if (song.processor === engine.processor && engine.node) {
-    engine.node.port.postMessage({ t: 'params', params: song.params });
+    engine.node.port.postMessage({ t: 'params', params: engineParams(song) });
     engine.node.port.postMessage({ t: 'score', score: song.score });
     return;
   }
@@ -249,7 +249,7 @@ async function syncOnce() {
   }
   const node = new AudioWorkletNode(engine.ctx, song.processor, {
     numberOfInputs: 0, outputChannelCount: [2],
-    processorOptions: { params: song.params, score: song.score, pool: T.pool, playing: T.playing, beat: T.beat },
+    processorOptions: { params: engineParams(song), score: song.score, pool: T.pool, playing: T.playing, beat: T.beat },
   });
   node.port.onmessage = (e) => {
     if (node === engine.node) heardFromEngine(e.data);
@@ -264,6 +264,7 @@ async function syncOnce() {
 }
 
 function heardFromEngine(message) {
+  if (message.rec) { takeNote(message); return; }
   if (T.playing) T.beat = message.beat;
   T.peaks = message.peaks;
   T.clock = message.clock;
@@ -279,11 +280,112 @@ T.play = async function play(from = T.startBeat) {
 };
 
 T.stop = function stop() {
+  if (T.recording) finishTake();
   T.playing = false;
   if (engine.node) engine.node.port.postMessage({ t: 'stop' });
   T.beat = T.startBeat;
   renderTransport();
 };
+
+// The metronome is the page's, not the song's: the song's parameters
+// always say off, and every set of them sent to the engine is patched.
+T.metronome = false;
+
+function engineParams(song) {
+  const params = song.params.slice();
+  if (T.metronome) params[song.metronomeParam] = 1;
+  return params;
+}
+
+T.toggleMetronome = function toggleMetronome() {
+  T.metronome = !T.metronome;
+  if (engine.node) engine.node.port.postMessage({ t: 'param', i: T.song.metronomeParam, v: T.metronome ? 1 : 0 });
+  renderTransport();
+};
+
+// Recording.  The engine says at which beat each played note sounded,
+// so a take lands where it was heard, not where the page's clock thought
+// it was; a take becomes a clip when recording stops.
+T.armed = new Set();
+T.recording = false;
+let take = null;
+
+const playable = (track) => track && track.instrument && track.instrument.kind !== 'sampler';
+
+T.record = async function record() {
+  if (T.recording) { finishTake(); renderTransport(); renderArrangement(); return; }
+  if (![...T.armed].some((id) => playable(T.song.tracks.find((t) => t.id === id)))) {
+    const selected = T.song.tracks.find((t) => t.id === T.trackId);
+    if (!playable(selected)) {
+      status('Arm a synth or drum track first: its ● button.');
+      return;
+    }
+    T.armed.add(selected.id);
+  }
+  take = { held: new Map(), notes: new Map() };
+  T.recording = true;
+  if (!T.playing) await T.play();
+  renderTransport();
+  renderArrangement();
+};
+
+// A player plays to what they hear, and they hear each beat the output's
+// latency after the engine reached it: a take is moved earlier by that
+// much, as a recording studio's software compensates.
+function heardBeat(beat) {
+  const ctx = engine.ctx;
+  const latency = ctx ? (ctx.outputLatency || 0) + (ctx.baseLatency || 0) : 0;
+  return Math.max(0, beat - latency * T.song.tempo / 60);
+}
+
+function takeNote(m) {
+  if (!take) return;
+  const key = `${m.track}:${m.pitch}`;
+  if (m.rec === 'on') {
+    take.held.set(key, { start: heardBeat(m.beat), vel: m.vel });
+    return;
+  }
+  const held = take.held.get(key);
+  if (!held) return;
+  take.held.delete(key);
+  keepNote(m.track, m.pitch, held, heardBeat(m.beat));
+}
+
+function keepNote(track, pitch, held, end) {
+  const song = T.song;
+  // a note held across the loop's wrap ends after its start
+  const length = end >= held.start ? end - held.start
+    : (song.loopEnd - held.start) + (end - song.loopStart);
+  if (!take.notes.has(track)) take.notes.set(track, []);
+  take.notes.get(track).push([pitch, +held.start.toFixed(4), Math.max(0.01, +length.toFixed(4)), held.vel]);
+}
+
+function finishTake() {
+  if (!take) return;
+  for (const [key, held] of take.held) {
+    const [track, pitch] = key.split(':').map(Number);
+    keepNote(track, pitch, held, T.beat);
+  }
+  const done = take;
+  take = null;
+  T.recording = false;
+  for (const [track, notes] of done.notes) {
+    const name = T.song.tracks[track] && T.song.tracks[track].name;
+    if (name && notes.length) T.send(form('record-notes', name, notes));
+  }
+}
+
+// Notes played live go to the armed tracks, or with none armed to the
+// selected one; an armed track records them while recording.
+function liveTargets() {
+  const tracks = T.song.tracks;
+  const armed = tracks.filter((t) => T.armed.has(t.id) && playable(t));
+  if (armed.length) return armed.map((t) => tracks.indexOf(t));
+  const i = tracks.findIndex((t) => t.id === T.trackId);
+  return i >= 0 && playable(tracks[i]) ? [i] : [];
+}
+
+const sounding = new Map();
 
 T.locate = function locate(beat) {
   T.startBeat = Math.max(0, beat);
@@ -296,17 +398,25 @@ T.locate = function locate(beat) {
   renderAll();
 };
 
-// Notes played live: on the selected track, from the keys or a device.
+// Notes played live, from the keys, a MIDI device or the piano roll.
 T.noteOn = async function noteOn(pitch, velocity = 100) {
-  const index = T.song.tracks.findIndex((t) => t.id === T.trackId);
-  if (index < 0) return;
+  const targets = liveTargets();
+  if (!targets.length) return;
   await startAudio();
-  engine.node.port.postMessage({ t: 'note', track: index, pitch, vel: velocity });
+  sounding.set(pitch, targets);
+  for (const track of targets) {
+    const rec = T.recording && T.armed.has(T.song.tracks[track].id);
+    engine.node.port.postMessage({ t: 'note', track, pitch, vel: velocity, rec });
+  }
 };
 
 T.noteOff = function noteOff(pitch) {
-  const index = T.song.tracks.findIndex((t) => t.id === T.trackId);
-  if (index >= 0 && engine.node) engine.node.port.postMessage({ t: 'noteoff', track: index, pitch });
+  const targets = sounding.get(pitch) || liveTargets();
+  sounding.delete(pitch);
+  if (!engine.node) return;
+  for (const track of targets) {
+    engine.node.port.postMessage({ t: 'noteoff', track, pitch, rec: T.recording });
+  }
 };
 
 // The song kept in this browser too, so a restarted server loses nothing.
@@ -340,6 +450,12 @@ function renderTransport() {
     el('button', { class: song.loopOn ? 'on' : '', 'data-ctl': 'loop', 'data-title': 'Loop',
                    'data-doc': 'Repeat the stretch under the bracket in the ruler. L does the same.',
                    onclick: () => T.send(form('set-loop', song.loopStart, song.loopEnd, kw('on'), !song.loopOn)) }, 'Loop'),
+    el('button', { id: 'record', class: T.recording ? 'on rec' : 'rec', 'data-ctl': 'record', 'data-title': 'Record',
+                   'data-doc': 'Record what the armed tracks are played, from a MIDI keyboard or the computer keys (M), into a new clip. F9 does the same; press again or Stop to keep the take.',
+                   onclick: () => T.record() }, '● Rec'),
+    el('button', { class: T.metronome ? 'on' : '', 'data-ctl': 'metronome', 'data-title': 'Metronome',
+                   'data-doc': 'A click on every beat while the song plays, higher on the first of the bar. It is not in an export.',
+                   onclick: () => T.toggleMetronome() }, 'Click'),
     el('span', { class: 'readout', id: 'position' }, '1.1.1'),
     el('button', { id: 'back-to-arrangement', hidden: true, 'data-ctl': 'back-to-arrangement',
                    'data-title': 'Back to Arrangement',

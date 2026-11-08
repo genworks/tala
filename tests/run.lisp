@@ -823,6 +823,45 @@ of an audio track at 120 BPM."
         (check "and repairs leave the plan and the program alone"
           (and (equal plan (the-object song plan)) (equal builds *builds*)))))))
 
+(defun test-recording ()
+  (let ((song (make-song)))
+    (forms-pass? song "(set-tempo 120) (add-track \"Keys\")")
+    (let ((left (render-song song (* 5 24000) :metronome t)))
+      (check "the metronome clicks on every beat and is quiet between"
+        (and (loud? left 0 1000) (quiet? left 6000 23000) (loud? left 24000 25000)
+             (loud? left 96000 97000)))
+      (check "higher on the first beat of the bar"
+        (flet ((pitch-of (from)
+                 (let ((part (subseq left from (+ from 1200))))
+                   (if (> (goertzel-power part 1600 48000) (goertzel-power part 1000 48000)) 1600 1000))))
+          (and (= 1600 (pitch-of 0)) (= 1000 (pitch-of 24000)) (= 1600 (pitch-of 96000))))))
+    (check "the song itself never clicks"
+      (quiet? (render-song song 48000) 0 48000))
+    (forms-pass? song "(record-notes \"Keys\" ((60 5.03 0.4 90) (64 6.48 0.6 100)))")
+    (let ((clip (first (getf (first (getf (the-object song spec) :tracks)) :clips))))
+      (check "a take becomes a clip over the bars it was played in"
+        (and (= 4 (getf clip :start)) (= 4 (getf clip :length))
+             (equal (mapcar #'first (getf clip :notes)) '(60 64))
+             (< (abs (- (second (first (getf clip :notes))) 1.03)) 1d-9)))
+      (check "and plays where it was played"
+        (let ((left (render-song song (* 8 24000))))
+          (and (quiet? left 0 (* 5 24000)) (loud? left (round (* 5.03 24000)) (round (* 5.2 24000)))))))
+    (forms-pass? song "(quantize-notes \"Keys\" nil 0.5)")
+    (check "quantizing moves the starts onto the grid"
+      (equal (mapcar #'second (getf (first (getf (first (getf (the-object song spec) :tracks)) :clips)) :notes))
+             '(1.0 2.5)))
+    (forms-pass? song "(record-notes \"Keys\" ((67 9.1 0.2 100)) :quantize 0.25)")
+    (check "a take can be quantized as it is kept"
+      (= 1 (second (first (getf (second (getf (first (getf (the-object song spec) :tracks)) :clips)) :notes)))))
+    (check "half strength keeps half the feel"
+      (let ((s (make-song)))
+        (forms-pass? s "(add-track \"K\") (add-clip \"K\" :length 4 :notes ((60 0.1 0.2))) (quantize-notes \"K\" nil 0.5 :strength 0.5)")
+        (< (abs (- 0.05 (second (first (getf (first (getf (first (getf (the-object s spec) :tracks)) :clips)) :notes))))) 1d-9)))
+    (check "a take refuses an audio track"
+      (let ((s (make-song)))
+        (forms-pass? s "(add-track \"Voice\" :instrument :sampler)")
+        (search "audio track" (form-error s "(record-notes \"Voice\" ((60 0 1)))"))))))
+
 (defun test-agent-survives-reload ()
   (check "a reload keeps where the agent was pointed"
     (let ((saved (sexp-agent:agent-messages-url *agent*)))
@@ -979,6 +1018,7 @@ change: (record-golden).")
   (test-sharing)
   (test-trimming)
   (test-repair)
+  (test-recording)
   (test-agent-survives-reload)
   (test-json)
   (test-reference)

@@ -222,6 +222,9 @@ the control's range is held at the end, as a knob is."
       (the-object song (set-slot! :spec spec)))
     song))
 
+(defun song-beats-per-bar (spec)
+  (* (getf spec :numerator) (/ 4 (getf spec :denominator))))
+
 (defun song-params (song)
   "The parameter array for SONG, in the order PLAN-LAYOUT places them."
   (let* ((spec (the-object song spec))
@@ -232,6 +235,8 @@ the control's range is held at the end, as a knob is."
       (emit (getf spec :loop-start))
       (emit (getf spec :loop-end))
       (emit (getf spec :quantize 4))
+      (emit 0)
+      (emit (song-beats-per-bar spec))
       (flet ((emit-device (device)
                (emit (if (the-object device on?) 1 0))
                (dolist (x (the-object device numbers)) (emit x))))
@@ -586,10 +591,15 @@ else, as SETF of GETF would not do for a new key."
 
 ;;; The render, and the file.
 
-(defun render-song (song frames &key (sr 48000) (from 0) block-size script)
+(defun render-song (song frames &key (sr 48000) (from 0) block-size script metronome)
   "FRAMES frames of SONG from beat FROM: (values left right).  SCRIPT
-is what is launched when: ((frame :launch track row)...)."
-  (render-plan (the-object song plan) (the-object song params) (the-object song score) frames
+is what is launched when: ((frame :launch track row)...); METRONOME
+clicks the beats, as the page does when its metronome is on."
+  (render-plan (the-object song plan)
+               (let ((params (copy-seq (the-object song params))))
+                 (when metronome (setf (aref params gp-metronome) 1d0))
+                 params)
+               (the-object song score) frames
                :sr sr :from from :block-size (or block-size frames) :script script
                :pool (pool-for (getf (the-object song spec) :samples))))
 

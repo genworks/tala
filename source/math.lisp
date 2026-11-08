@@ -24,10 +24,12 @@
 ;; beats since play began and never jumps back with the loop: launched
 ;; clips keep time by it, and look for their place again (REFIND) only
 ;; when their notes change, never when the arrangement wraps.
-(define-slots g beat playing bpf sr isr sub tick reseek seek loop-on loop-start loop-end clock refind)
+(define-slots g beat playing bpf sr isr sub tick reseek seek loop-on loop-start loop-end clock refind
+  click-beat click-env click-ph click-hz)
 
 ;; The song's own parameters, at the start of P.
-(define-slots gp tempo loop-on loop-start loop-end quantize)
+;; METRONOME is the page's to turn on; the song always says 0.
+(define-slots gp tempo loop-on loop-start loop-end quantize metronome bar-beats)
 
 (define-dsp d-sin ((x :num)) :inline
   "sin(2 pi X): X in turns, any size."

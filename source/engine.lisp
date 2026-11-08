@@ -65,6 +65,7 @@ resamples for the device, if it must, after the engine.")
 (define-dsp transport-start ((s :buf) (beat :num)) :nil
   (setf (sg g-beat) beat)
   (setf (sg g-clock) beat)
+  (setf (sg g-click-beat) -1d0)
   (setf (sg g-seek) beat)
   (setf (sg g-reseek) 1d0)
   (setf (sg g-playing) 1d0))
@@ -113,6 +114,26 @@ resamples for the device, if it must, after the engine.")
 (define-dsp seq-offset ((s :buf) (sc :buf) (b :int) (ti :int)) :num
   "Where track TI's current note is in the score, as a double."
   (+ (aref sc (+ 4 (* 2 ti))) (* 4d0 (dfloor (st tr-idx)))))
+
+(define-dsp metronome ((s :buf) (p :buf)) :inline
+  "This frame's click: a short tone on each beat, higher on the first of
+the bar, while the song plays and the metronome is on."
+  (let* ((index (dfloor (sg g-beat)))
+         (out 0d0))
+    (when (and (> (aref p gp-metronome) 0.5d0)
+               (> (sg g-playing) 0.5d0)
+               (not (= index (sg g-click-beat))))
+      (let* ((bar (max 1d0 (aref p gp-bar-beats))))
+        (setf (sg g-click-beat) index)
+        (setf (sg g-click-env) 1d0)
+        (setf (sg g-click-ph) 0d0)
+        (setf (sg g-click-hz) (if (< (- index (* bar (dfloor (/ index bar)))) 0.5d0) 1600d0 1000d0))))
+    (let* ((env (sg g-click-env)))
+      (when (> env 0.0001d0)
+        (setf out (* 0.25d0 env (d-sin (sg g-click-ph))))
+        (setf (sg g-click-ph) (wrap-phase (+ (sg g-click-ph) (* (sg g-click-hz) (sg g-isr)))))
+        (setf (sg g-click-env) (* env 0.9985d0))))
+    out))
 
 ;;; The session.
 
@@ -436,8 +457,10 @@ the state and parameter sizes after it as values."
                              (getf master :devices))
                    (track-out s ,(getf master :state) -1)
                    ,@(clear-forms master)
-                   (setf (aref ol f) (aref s ,(+ (getf master :state) tr-out-l)))
-                   (setf (aref orr f) (aref s ,(+ (getf master :state) tr-out-r)))
+                   ;; the click goes after the limiter, straight to the output
+                   (let* ((click (metronome s p)))
+                     (setf (aref ol f) (+ (aref s ,(+ (getf master :state) tr-out-l)) click))
+                     (setf (aref orr f) (+ (aref s ,(+ (getf master :state) tr-out-r)) click)))
                    (frame-step s))
                  nil)
                (engine-init (s)
@@ -570,8 +593,14 @@ PARAM-SIZE are its arrays' lengths, PLACED its layout."
       for (let i = 0; i < TRACKS; i++) { engineNoteOff(s, i, -1); sessionStop(s, TRACK_STATE[i]); }
       break;
     case 'seek': s[G_BEAT] = m.beat; s[G_SEEK] = m.beat; s[G_RESEEK] = 1; break;
-    case 'note': engineNote(s, this.p, m.track, m.pitch, m.vel, -1); break;
-    case 'noteoff': engineNoteOff(s, m.track, m.pitch); break;
+    case 'note':
+      engineNote(s, this.p, m.track, m.pitch, m.vel, -1);
+      if (m.rec) this.port.postMessage({ rec: 'on', track: m.track, pitch: m.pitch, vel: m.vel, beat: s[G_BEAT] });
+      break;
+    case 'noteoff':
+      engineNoteOff(s, m.track, m.pitch);
+      if (m.rec) this.port.postMessage({ rec: 'off', track: m.track, pitch: m.pitch, beat: s[G_BEAT] });
+      break;
     case 'launch': sessionQueue(s, this.p, TRACK_STATE[m.track], m.row); break;
     case 'arrange':
       for (let i = 0; i < TRACKS; i++) {
