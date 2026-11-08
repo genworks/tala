@@ -154,6 +154,13 @@ look for:
 
   The drum kit's pads are pitches 36 to 43, in the order under
   `:drums` below.
+- `(set-pad-sample track pad sample &key keep-synth)` — a sample on a
+  drum pad (1 to 8, or its name, "Kick"), played from its start at
+  each hit at the pad's `:level` and `:pan`, `:shift` semitones up or
+  down.  The pad's synthesized hit goes quiet (its `:tone`, `:noise` and
+  `:click` to 0) unless `:keep-synth t`, which layers the two: a sampled
+  kick under a synthesized click, say.  SAMPLE `nil` takes it off.  The
+  person can also drop a file on a pad.
 - `(transpose-notes track clip semitones)`.
 - `(quantize-notes track clip grid &key strength)` — note starts moved to
   the nearest line of `grid` beats; `:strength 0.5` moves them halfway,

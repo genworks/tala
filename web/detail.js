@@ -137,14 +137,32 @@ function drumBody(track, device) {
   const names = kind.params.filter((p) => p.key.endsWith('-tune')).map((p) => p.label.replace(/ tune$/, ''));
   const prefix = `pad${pad}-`;
   const params = kind.params.filter((p) => p.key.startsWith(prefix));
+  const pads = device.pads || [];
+  const sampleName = (id) => (T.song.samples.find((s) => s.id === id) || {}).name;
+  const choose = el('select', {
+    'data-ctl': `pad-sample:${pad}`, 'data-title': 'Pad sample',
+    'data-doc': 'A sample this pad plays from its start at each hit, at its level and pan. Choosing one turns the synthesized hit off; raise tone, noise or click to layer them. Or drop an audio file on a pad.',
+    onchange: (e) => T.send(form('set-pad-sample', track.name, pad, e.target.value ? sampleName(+e.target.value) : null)),
+  }, el('option', { value: '' }, 'Synthesized'),
+     T.song.samples.map((s) => el('option', { value: s.id, selected: pads[pad - 1] === s.id }, s.name)));
   return [
     el('div', { class: 'pads' }, names.map((name, i) => el('button', {
-      class: i + 1 === pad ? 'on' : '',
-      'data-title': name, 'data-doc': `Pad ${i + 1}, played by pitch ${36 + i}.`,
+      class: (i + 1 === pad ? 'on' : '') + (pads[i] ? ' sampled' : ''),
+      'data-ctl': `pad:${i + 1}`,
+      'data-title': name,
+      'data-doc': `Pad ${i + 1}, played by pitch ${36 + i}.${pads[i] ? ` It plays ${sampleName(pads[i])}.` : ''} Drop an audio file here to play it from this pad.`,
       onclick: () => { T.drumPad = i + 1; renderDetail(); },
       onpointerdown: () => T.noteOn(36 + i),
       onpointerup: () => T.noteOff(36 + i),
-    }, name))),
+      ondragover: (e) => e.preventDefault(),
+      ondrop: (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const file = e.dataTransfer.files[0];
+        if (file) { T.drumPad = i + 1; T.padFromFile(track, i + 1, file); }
+      },
+    }, pads[i] ? sampleName(pads[i]) || name : name))),
+    el('label', { class: 'pad-sample' }, 'Sample ', choose),
     group(names[pad - 1], params.map((p) => controlFor(track, device, p, names[pad - 1]))),
   ];
 }

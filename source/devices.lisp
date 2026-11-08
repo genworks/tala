@@ -248,20 +248,22 @@ parameters."
 
 ;;; The drum kit: eight pads, each a small synthesizer of its own (a
 ;;; sine that falls in pitch, filtered noise and a click), so a kick, a
-;;; hat or a clap is a set of values.
+;;; hat or a clap is a set of values.  A pad may also play a sample, one
+;;; shot from its start, beside or instead of the synthesized hit: the
+;;; score's pad table names its region.
 
-(define-slots dp tune sweep sweep-time decay tone noise noise-decay noise-cutoff click drive level pan)
+(define-slots dp tune sweep sweep-time decay tone noise noise-decay noise-cutoff click drive level pan shift)
 
 (defparameter *pad-defaults*
-  ;;       tune sweep swt   decay tone noise ndec  ncut  click drive level pan
-  '(("Kick"   50  36 0.03  0.30  1.0  0.0  0.02  8000  0.2  0.0  -3  0)
-    ("Snare" 185  12 0.02  0.12  0.6  0.7  0.16  2000  0.2  0.0  -6  0)
-    ("Clap"  900   0 0.01  0.02  0.0  1.0  0.20  1200  0.4  0.0  -8  0)
-    ("Closed hat" 3000 0 0.01 0.02 0.0 0.8 0.05 8000 0.1 0.0 -12  0.1)
-    ("Open hat"   3000 0 0.01 0.02 0.0 0.8 0.35 7000 0.1 0.0 -14 -0.1)
-    ("Tom"   110  12 0.05  0.35  1.0  0.1  0.05  3000  0.2  0.0  -6  0.2)
-    ("Rim"   400   5 0.01  0.04  0.7  0.3  0.03  3000  0.5  0.0 -10 -0.2)
-    ("Shaker" 5000 0 0.01 0.01 0.0 0.6 0.08 6000 0.0 0.0 -16 0.3))
+  ;;       tune sweep swt   decay tone noise ndec  ncut  click drive level pan shift
+  '(("Kick"   50  36 0.03  0.30  1.0  0.0  0.02  8000  0.2  0.0  -3  0    0)
+    ("Snare" 185  12 0.02  0.12  0.6  0.7  0.16  2000  0.2  0.0  -6  0    0)
+    ("Clap"  900   0 0.01  0.02  0.0  1.0  0.20  1200  0.4  0.0  -8  0    0)
+    ("Closed hat" 3000 0 0.01 0.02 0.0 0.8 0.05 8000 0.1 0.0 -12  0.1  0)
+    ("Open hat"   3000 0 0.01 0.02 0.0 0.8 0.35 7000 0.1 0.0 -14 -0.1  0)
+    ("Tom"   110  12 0.05  0.35  1.0  0.1  0.05  3000  0.2  0.0  -6  0.2  0)
+    ("Rim"   400   5 0.01  0.04  0.7  0.3  0.03  3000  0.5  0.0 -10 -0.2  0)
+    ("Shaker" 5000 0 0.01 0.01 0.0 0.6 0.08 6000 0.0 0.0 -16 0.3   0))
   "A kit's starting values: sounds to start from, as a new synth starts
 as a plain saw.  Anything else is set through the pads' parameters.")
 
@@ -271,7 +273,7 @@ as a plain saw.  Anything else is set through the pads' parameters.")
             append (flet ((key (word) (intern (format nil "PAD~d-~a" pad word) :keyword))
                           (label (word) (format nil "~a ~a" name word)))
                      (destructuring-bind (tune sweep sweep-time decay tone noise noise-decay noise-cutoff
-                                          click drive level pan)
+                                          click drive level pan shift)
                          values
                        (list
                         (make-param (key "TUNE") (label "tune") :default tune :min 20 :max 8000 :unit "Hz" :scale :log
@@ -289,12 +291,14 @@ as a plain saw.  Anything else is set through the pads' parameters.")
                         (make-param (key "CLICK") (label "click") :default click :min 0 :max 1 :doc "A very short attack transient, which helps a drum cut through.")
                         (make-param (key "DRIVE") (label "drive") :default drive :min 0 :max 24 :unit "dB" :doc "Saturation: a harder, louder hit.")
                         (make-param (key "LEVEL") (label "level") :default level :min -60 :max 12 :unit "dB" :doc "The pad's level.")
-                        (make-param (key "PAN") (label "pan") :default pan :min -1 :max 1 :doc "Left -1 to right 1."))))))
+                        (make-param (key "PAN") (label "pan") :default pan :min -1 :max 1 :doc "Left -1 to right 1.")
+                        (make-param (key "SHIFT") (label "sample pitch") :default shift :min -48 :max 48 :unit "semitones"
+                                    :doc "Plays the pad's sample, when it has one, higher or lower: pitch and speed together."))))))
 
 (define-slots dk noise)
-(define-slots dv active ph penv pcoef amp acoef namp ncoef click lp vel)
+(define-slots dv active ph penv pcoef amp acoef namp ncoef click lp vel spos send sleft sright srate sgain)
 
-(define-dsp drum-note-on ((s :buf) (p :buf) (b :int) (pb :int) (pitch :num) (vel :num) (gate :num)) :nil
+(define-dsp drum-note-on ((s :buf) (p :buf) (sc :buf) (b :int) (pb :int) (ti :int) (pitch :num) (vel :num) (gate :num)) :nil
   (let* ((pad (- (ifloor pitch) 36)))
     (when (and (>= pad 0) (< pad 8))
       (let* ((o (+ b dk-size (* pad dv-size)))
@@ -311,9 +315,35 @@ as a plain saw.  Anything else is set through the pads' parameters.")
         (setf (aref s (+ o dv-click)) 1d0)
         (setf (aref s (+ o dv-vel)) (/ vel 127d0))
         (when (< (st dk-noise) 1d0)
-          (setf (st dk-noise) (+ 54321d0 (dfloat b))))))))
+          (setf (st dk-noise) (+ 54321d0 (dfloat b))))
+        ;; the pad's sample, a region plus one in the pad table, or none
+        (let* ((ref (ifloor (aref sc (+ (ifloor (aref sc 4)) (* 8 ti) pad)))))
+          (setf (aref s (+ o dv-spos)) 0d0)
+          (setf (aref s (+ o dv-send)) 0d0)
+          (when (> ref 0)
+            (let* ((row (+ (ifloor (aref sc 2)) (* 7 (- ref 1)))))
+              (setf (aref s (+ o dv-spos)) (aref sc (+ row 2)))
+              (setf (aref s (+ o dv-send)) (aref sc (+ row 3)))
+              (setf (aref s (+ o dv-sleft)) (aref sc row))
+              (setf (aref s (+ o dv-sright)) (aref sc (+ row 1)))
+              (setf (aref s (+ o dv-srate)) (* (aref sc (+ row 4)) (d-exp2 (/ (aref p (+ q dp-shift)) 12d0))))
+              (setf (aref s (+ o dv-sgain)) (aref sc (+ row 5))))))))))
 
-(define-dsp drum-run ((s :buf) (p :buf) (b :int) (pb :int) (bus :int)) :nil
+(define-dsp pad-sample ((s :buf) (pool :pool) (p :buf) (o :int) (q :int) (bus :int)) :nil
+  "The sample of the pad whose voice is at O, one frame, at the pad's
+level and pan; nothing once it has run out."
+  (let* ((pos (aref s (+ o dv-spos)))
+         (end (aref s (+ o dv-send))))
+    (when (< pos (- end 1d0))
+      (let* ((g (* (aref s (+ o dv-sgain)) (aref s (+ o dv-vel)) (db-gain (aref p (+ q dp-level)))))
+             (pan (* (+ (aref p (+ q dp-pan)) 1d0) 0.125d0))
+             (l (sample-at pool (ifloor (aref s (+ o dv-sleft))) pos end))
+             (r (sample-at pool (ifloor (aref s (+ o dv-sright))) pos end)))
+        (setf (aref s (+ o dv-spos)) (+ pos (aref s (+ o dv-srate))))
+        (setf (aref s bus) (+ (aref s bus) (* l g 1.4142135623730951d0 (d-sin (+ pan 0.25d0)))))
+        (setf (aref s (+ bus 1)) (+ (aref s (+ bus 1)) (* r g 1.4142135623730951d0 (d-sin pan))))))))
+
+(define-dsp drum-run ((s :buf) (p :buf) (pool :pool) (b :int) (pb :int) (bus :int)) :nil
   (let* ((isr (sg g-isr)))
     (dotimes (pad 8)
       (let* ((o (+ b dk-size (* pad dv-size)))
@@ -345,7 +375,9 @@ as a plain saw.  Anything else is set through the pads' parameters.")
             (setf (aref s (+ o dv-click)) (* click 0.99d0))
             (setf (aref s bus) (+ (aref s bus) (* y 1.4142135623730951d0 (d-sin (+ pan 0.25d0)))))
             (setf (aref s (+ bus 1)) (+ (aref s (+ bus 1)) (* y 1.4142135623730951d0 (d-sin pan))))
-            (when (and (< amp 0.00005d0) (< namp 0.00005d0))
+            (pad-sample s pool p o q bus)
+            (when (and (< amp 0.00005d0) (< namp 0.00005d0)
+                       (>= (aref s (+ o dv-spos)) (- (aref s (+ o dv-send)) 1d0)))
               (setf (aref s (+ o dv-active)) 0d0))))))))
 
 ;;; The audio player: a track of recorded sound.  A clip is a row of the
@@ -417,8 +449,8 @@ as a plain saw.  Anything else is set through the pads' parameters.")
   "After a jump: what was playing stops, and a clip the new place falls
 inside starts from there.  A long clip must not wait for its beginning."
   (sampler-release s b)
-  (let* ((o (ifloor (aref sc (+ 4 (* 2 ti)))))
-         (n (ifloor (aref sc (+ 5 (* 2 ti)))))
+  (let* ((o (ifloor (aref sc (+ 5 (* 2 ti)))))
+         (n (ifloor (aref sc (+ 6 (* 2 ti)))))
          (seek (sg g-seek)))
     (dotimes (i n)
       (let* ((e (+ o (* 4 i)))
@@ -947,7 +979,7 @@ function; DOC what it is for."
                          "A polyphonic subtractive synthesizer: two oscillators with FM, sub and noise, a resonant filter, two envelopes and an LFO. Basses, leads, pads, plucks, acid lines and effects.")
        (make-device-kind :drums "Drums" :instrument nil 'drum-run
                          (lambda (sr) (declare (ignore sr)) (+ dk-size (* 8 dv-size)))
-                         "A drum kit of eight synthesized pads, played by pitches 36 to 43.")
+                         "A drum kit of eight synthesized pads, played by pitches 36 to 43; any pad can also play a sample.")
        (make-device-kind :sampler "Audio" :instrument 'sampler-tick 'sampler-run
                          (lambda (sr) (declare (ignore sr)) (+ sa-size (* 4 sv-size)))
                          "A track of recorded sound: spoken word, field recordings, loops. It plays audio clips, up to four at once.")

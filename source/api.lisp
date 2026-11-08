@@ -192,7 +192,14 @@ effects, clips and automation."
                            label (getf track :name) (getf track :gain 0) (getf track :pan 0)
                            (getf track :sends) (getf track :mute) (getf track :solo))
                    (when (getf track :instrument)
-                     (device-line (getf track :instrument) nil))
+                     (let ((kit (getf track :instrument)))
+                       (device-line kit nil)
+                       (loop for pad from 1 to 8
+                             for id = (getf kit (pad-sample-key pad))
+                             for sample = (and id (find id (getf spec :samples) :key (lambda (s) (getf s :id))))
+                             when sample
+                               do (format out "      pad ~d ~s plays sample ~s~%"
+                                          pad (first (nth (1- pad) *pad-defaults*)) (getf sample :name)))))
                    (loop for device in (getf track :devices)
                          for i from 0
                          do (device-line device i))
@@ -202,9 +209,10 @@ effects, clips and automation."
                          (format out "    in scene ~s (row ~d):~%"
                                  (getf scene :name) (position scene (getf spec :scenes)))))
                      (if (getf clip :sample)
-                         (format out "    audio clip ~a ~s: starts at beat ~a, ~a beats long, from ~a s into the sample, gain ~a dB, transpose ~a~%"
+                         (format out "    audio clip ~a ~s: starts at beat ~a, ~a beats long, from ~a s into the sample, gain ~a dB, transpose ~a, ~:[at its own speed~;~:*warped (~(~a~)) from ~a BPM~]~%"
                                  (getf clip :id) (getf clip :name) (getf clip :start) (getf clip :length)
-                                 (getf clip :offset 0) (getf clip :gain 0) (getf clip :transpose 0))
+                                 (getf clip :offset 0) (getf clip :gain 0) (getf clip :transpose 0)
+                                 (getf clip :warp) (getf clip :bpm))
                          (format out "    clip ~a ~s: starts at beat ~a, ~a beats long, repeats every ~a, ~d notes~%"
                                  (getf clip :id) (getf clip :name) (getf clip :start) (getf clip :length)
                                  (or (getf clip :loop) (getf clip :length)) (length (getf clip :notes)))))
@@ -585,6 +593,43 @@ are cut back to it, and one across both is split in two."
                  (push after kept))))))
     (put! found :clips (nreverse kept))))
 
+(defun find-pad (pad)
+  "PAD as a number from 1 to 8: a number already, or a pad's name."
+  (or (and (integerp pad) (<= 1 pad 8) pad)
+      (and (stringp pad)
+           (let ((at (position pad *pad-defaults* :key #'first :test #'string-equal)))
+             (and at (1+ at))))
+      (error "A pad is a number from 1 to 8 or a name: ~{~s~^, ~}." (mapcar #'first *pad-defaults*))))
+
+(define-op set-pad-sample (track pad sample &key keep-synth)
+  "SAMPLE on drum PAD, 1 to 8 or a pad's name such as \"Kick\", of
+TRACK's kit: played from its start at each hit, at the pad's level and
+pan, :padN-shift semitones up or down.  The pad's synthesized hit (its
+tone, noise and click) is turned off so the sample is what is heard,
+unless KEEP-SYNTH, which layers the two.  SAMPLE nil takes the sample
+off and brings the synthesized hit back."
+  (edit-song! (song)
+              (lambda (spec)
+                (let* ((found (find-track spec track))
+                       (kit (getf found :instrument))
+                       (n (find-pad pad))
+                       (layer (mapcar (lambda (word) (intern (format nil "PAD~d-~a" n word) :keyword))
+                                      '("TONE" "NOISE" "CLICK"))))
+                  (unless (eq (getf kit :kind) :drums)
+                    (error "~s has no drum kit: pads are on a track made with :instrument :drums." (getf found :name)))
+                  (if sample
+                      (let ((s (find-sample spec sample)))
+                        (put! kit (pad-sample-key n) (getf s :id))
+                        (unless keep-synth
+                          (set-values! kit (loop for key in layer append (list key 0))))
+                        (list :pad n :name (first (nth (1- n) *pad-defaults*)) :sample (getf s :name)))
+                      (let ((values (copy-list (getf kit :values))))
+                        (remf kit (pad-sample-key n))
+                        ;; the hit's own defaults again
+                        (dolist (key layer) (remf values key))
+                        (put! kit :values values)
+                        (list :pad n :name (first (nth (1- n) *pad-defaults*)) :sample nil)))))))
+
 (define-op add-audio-clip (track sample &key (start 0) length (offset 0) (gain 0) (transpose 0)
                                  (warp :stretch) bpm replace name scene)
   "SAMPLE on an audio TRACK from beat START.  OFFSET is where in the
@@ -649,6 +694,14 @@ the model knows."
                                       :key (lambda (c) (getf c :sample))))
                               (getf spec :tracks))
                     (error "Clips still use ~s; delete them first." (getf s :name)))
+                  (let ((on-pad (find-if (lambda (track)
+                                           (let ((kit (getf track :instrument)))
+                                             (loop for pad from 1 to 8
+                                                   thereis (eql (getf kit (pad-sample-key pad)) (getf s :id)))))
+                                         (getf spec :tracks))))
+                    (when on-pad
+                      (error "A drum pad on ~s plays ~s; take it off with set-pad-sample first."
+                             (getf on-pad :name) (getf s :name))))
                   (put! spec :samples (remove s (getf spec :samples)))
                   (list :deleted (getf s :name))))))
 
@@ -659,10 +712,9 @@ the sound each one plays stays where it was in the song."
     (dolist (c (getf track :clips))
       (when (eql (getf c :sample) id)
         (let* ((offset (getf c :offset 0))
-               (rate (expt 2d0 (/ (getf c :transpose 0) 12d0)))
                ;; what was cut inside the clip, after its start in the sample
                (late (max 0 (- shift offset)))
-               (beats (/ (* late (getf spec :tempo)) 60 rate)))
+               (beats (/ late (clip-seconds-per-beat c (getf spec :tempo)))))
           (put! c :offset (max 0 (- offset shift)))
           (when (plusp beats)
             (put! c :start (+ (getf c :start) beats))

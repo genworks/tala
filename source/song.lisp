@@ -294,6 +294,16 @@ is transposed."
           (db-gain (float (getf clip :gain 0) 1d0))
           (if (eq warp :stretch) shift speed))))
 
+(defun pad-sample-key (pad)
+  "The key of a drum kit's spec naming the sample PAD, 1 to 8, plays."
+  (intern (format nil "SAMPLE~d" pad) :keyword))
+
+(defun pad-region (id samples layout)
+  "The region of sample ID on a drum pad: all of it, as it was recorded."
+  (let* ((sample (find id samples :key (lambda (s) (getf s :id))))
+         (row (assoc (getf sample :id) layout)))
+    (list (or (second row) 0) (or (third row) 0) 0 (or (fourth row) 0) 1d0 1d0 1d0)))
+
 (defun song-score (song)
   "The score array for SONG: its notes, session clips, automation and
 audio regions, as the engine reads them (engine.lisp)."
@@ -322,14 +332,14 @@ audio regions, as the engine reads them (engine.lisp)."
              (emit-events (events)
                (dolist (event events)
                  (dolist (x event) (emit x)))))
-      (dotimes (i (+ 4 (* 2 (length tracks)))) (emit 0))
+      (dotimes (i (+ 5 (* 2 (length tracks)))) (emit 0))
       (put 0 (length tracks))
       ;; the timeline
       (loop for track in tracks
             for i from 0
             do (let ((events (playable track (the-object track events))))
-                 (put (+ 4 (* 2 i)) (here))
-                 (put (+ 5 (* 2 i)) (length events))
+                 (put (+ 5 (* 2 i)) (here))
+                 (put (+ 6 (* 2 i)) (length events))
                  (emit-events events)))
       ;; the session's clips, each slot's notes from the clip's own start
       (let ((slots
@@ -357,20 +367,34 @@ audio regions, as the engine reads them (engine.lisp)."
             (dolist (point (cdr lane))
               (emit (first point))
               (emit (second point)))))
-        ;; the audio regions
-        (put 2 (here))
-        (dolist (row (reverse regions))
-          (dolist (x row) (emit x)))
-        ;; the session table
-        (let ((table (here)))
-          (put 3 table)
-          (dotimes (i (* 2 (length tracks))) (emit 0))
-          (loop for rows in slots
-                for i from 0
-                do (put (+ table (* 2 i)) (here))
-                   (put (+ table (* 2 i) 1) (length rows))
-                   (dolist (row rows)
-                     (dolist (x row) (emit x)))))))
+        ;; each drum pad's sample becomes a region too
+        (let ((pads (loop for track in tracks
+                          for instrument = (the-object track instrument-spec)
+                          collect (loop for pad from 1 to 8
+                                        for sample = (and (eq (getf instrument :kind) :drums)
+                                                          (getf instrument (pad-sample-key pad)))
+                                        collect (if sample
+                                                    (progn (push (pad-region sample samples layout) regions)
+                                                           (length regions))
+                                                    0)))))
+          ;; the audio regions
+          (put 2 (here))
+          (dolist (row (reverse regions))
+            (dolist (x row) (emit x)))
+          ;; the session table
+          (let ((table (here)))
+            (put 3 table)
+            (dotimes (i (* 2 (length tracks))) (emit 0))
+            (loop for rows in slots
+                  for i from 0
+                  do (put (+ table (* 2 i)) (here))
+                     (put (+ table (* 2 i) 1) (length rows))
+                     (dolist (row rows)
+                       (dolist (x row) (emit x)))))
+          ;; the pad table
+          (put 4 (here))
+          (dolist (row pads)
+            (dolist (x row) (emit x))))))
     (coerce out '(simple-array double-float (*)))))
 
 (defun lane-numbers (track lane)

@@ -111,8 +111,9 @@ the Info box and the model's reference, so a control is explained once
 ## Devices
 
 Synth (two oscillators with FM, sub, noise, a resonant 12 or 24 dB
-filter, two envelopes, an LFO, glide), Drums (eight synthesized pads),
-Audio (a track of recorded clips), Auto Filter, EQ Three, Saturator, Compressor with sidechain, Delay,
+filter, two envelopes, an LFO, glide), Drums (eight synthesized pads,
+each of which can also play a sample), Audio (a track of recorded clips
+that follow the tempo, stretched or repitched), Auto Filter, EQ Three, Saturator, Compressor with sidechain, Delay,
 Chorus, Phaser, Reverb, Utility and Limiter.
 
 ## Tests
@@ -135,8 +136,7 @@ the other half.
 Recording into a session slot (takes go into the arrangement); takes
 stacked as comps; follow actions; tempo
 per scene; warp markers inside a clip (a clip follows the tempo as a
-whole); samples on drum
-pads; saved songs that carry their audio; tempo changes along the song;
+whole); choke groups and sample start, end and envelope on drum pads; saved songs that carry their audio; tempo changes along the song;
 plugin hosting.
 
 ## License

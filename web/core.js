@@ -170,6 +170,19 @@ T.importFile = async function importFile(file, track, beat = T.startBeat) {
   }
 };
 
+// A file dropped on a drum pad: a sample, played by that pad.
+T.padFromFile = async function padFromFile(track, pad, file) {
+  status(`Reading ${file.name}...`);
+  try {
+    const { channels, data } = await T.decodeFile(file);
+    const name = await T.uploadSample(file.name.replace(/\.[^.]*$/, ''), channels, data);
+    await T.send(form('set-pad-sample', track.name, pad, name));
+    status(`${name} is on pad ${pad} of ${track.name}.`);
+  } catch (e) {
+    status(`Could not import ${file.name}: ${e.message}`);
+  }
+};
+
 function renderAll() {
   for (const render of T.renderers) render();
 }

@@ -463,6 +463,60 @@ only bounds."
                       '((0 1 0) (2.0d0 2.0d0 1.0d0)))
                (/= (getf (first parts) :id) (getf (second parts) :id))))))))
 
+(defun song-with-pad-sample ()
+  "A kit whose kick plays the speech-like sample, hit on beat 0 and beat 4."
+  (let ((song (song-with-sample)))
+    (forms-pass? song "(add-track \"Kit\" :instrument :drums)
+                       (add-clip \"Kit\" :length 8 :notes ((36 0 0.25) (36 4 0.25)))
+                       (set-pad-sample \"Kit\" \"Kick\" \"Voice\")")
+    song))
+
+(defun test-pads ()
+  (check "a pad's sample plays from its start at each hit, the synthesized hit silent"
+    (let* ((song (song-with-pad-sample))
+           (left (render-song song (* 3 48000))))
+      ;; the sample's first burst is 0.1 to 0.5 s; beat 4 is 2 s
+      (and (< (peak-of (subseq left 0 4000)) 1d-6)
+           (> (peak-of (subseq left 6000 23000)) 0.2d0)
+           (< (peak-of (subseq left 25000 42000)) 1d-6)
+           (> (peak-of (subseq left (+ 96000 6000) (+ 96000 23000))) 0.2d0))))
+    (check "its shift plays it higher and faster"
+      (let ((song (song-with-pad-sample)))
+        (forms-pass? song "(set-device \"Kit\" :drums :pad1-shift 12)")
+        (let ((left (render-song song 48000)))
+          ;; the first burst now 0.05 to 0.25 s
+          (and (> (peak-of (subseq left 3000 11000)) 0.2d0)
+               (< (peak-of (subseq left 13000 20000)) 1d-6)
+               (< (abs (- 440 (hertz left 3000 11000))) 12)))))
+    (check "keep-synth layers the synthesized hit under it"
+      (let ((song (song-with-sample)))
+        (forms-pass? song "(add-track \"Kit\" :instrument :drums)
+                           (add-clip \"Kit\" :length 8 :notes ((36 0 0.25)))
+                           (set-pad-sample \"Kit\" 1 \"Voice\" :keep-synth t)")
+        (let ((left (render-song song 48000)))
+          (> (peak-of (subseq left 0 4000)) 0.05d0))))
+    (check "taking the sample off brings the kick back"
+      (let ((song (song-with-pad-sample)))
+        (forms-pass? song "(set-pad-sample \"Kit\" \"Kick\" nil)")
+        (let ((kit (getf (second (getf (the-object song spec) :tracks)) :instrument)))
+          (and (null (getf kit :sample1)) (null (getf kit :values))
+               (> (peak-of (subseq (render-song song 48000) 0 4000)) 0.05d0)))))
+    (check "a sample on a pad cannot be deleted"
+      (let ((song (song-with-pad-sample)))
+        (search "drum pad" (form-error song "(delete-sample \"Voice\")"))))
+    (check "a pad's sample is data: the plan and program stay"
+      (let* ((song (song-with-sample))
+             (plan (progn (forms-pass? song "(add-track \"Kit\" :instrument :drums) (add-clip \"Kit\" :notes ((36 0 1)))")
+                          (render-song song 480)
+                          (the-object song plan)))
+             (builds (copy-list *builds*)))
+        (forms-pass? song "(set-pad-sample \"Kit\" 3 \"Voice\")")
+        (render-song song 480)
+        (and (equal plan (the-object song plan)) (equal builds *builds*))))
+    (check "the model is told which pads play samples"
+      (search "pad 1 \"Kick\" plays sample \"Voice\""
+              (let ((*song* (song-with-pad-sample))) (tala-api::describe-song)))))
+
 (defun song-with-sample (&optional stereo)
   (let ((song (make-song)))
     (multiple-value-bind (octets channels) (speech-like 2 stereo)
@@ -1117,6 +1171,7 @@ change: (record-golden).")
   (test-sharing)
   (test-trimming)
   (test-warping)
+  (test-pads)
   (test-repair)
   (test-recording)
   (test-agent-survives-reload)

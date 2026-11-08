@@ -317,6 +317,22 @@ T.sampleTest = async function sampleTest() {
   checks.parityRepitched = (await T.selfTest(48000 * 8)).ok;
   await T.send(form('set-tempo', 120));
   await T.synced;
+  // a file dropped on a drum pad plays from that pad
+  await T.send(form('add-track', 'Kit', kw('instrument'), kw('drums')),
+               form('add-clip', 'Kit', kw('length'), 16, kw('notes'), [[37, 0, 0.25], [36, 2, 0.25], [37, 9, 0.25]]));
+  await T.synced;
+  T.trackId = T.song.tracks.find((t) => t.name === 'Kit').id;
+  T.detail = 'devices';
+  renderDetail();
+  const padButton = document.querySelector('[data-ctl="pad:2"]');
+  const dropped = new DataTransfer();
+  dropped.items.add(testWav());
+  padButton.dispatchEvent(new DragEvent('drop', { dataTransfer: dropped, bubbles: true, cancelable: true }));
+  const kitPads = () => T.song.tracks.find((t) => t.name === 'Kit').instrument.pads;
+  for (let i = 0; i < 200 && !kitPads()[1]; i++) await new Promise((r) => setTimeout(r, 25));
+  await T.synced;
+  checks.padDrop = Boolean(kitPads()[1]);
+  checks.parityPads = (await T.selfTest(48000 * 6)).ok;
   await T.play(0);
   await new Promise((r) => setTimeout(r, 700));
   checks.plays = T.peaks && Math.max(...T.peaks) > 0.01;

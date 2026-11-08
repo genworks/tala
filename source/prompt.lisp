@@ -44,7 +44,7 @@
       (format out "~%### ~(~s~) — ~a (~(~a~))~%~%~a~%~%"
               (device-kind-key d) (device-kind-label d) (device-kind-type d) (device-kind-doc d))
       (if (eq (device-kind-key d) :drums)
-          ;; eight pads with the same twelve controls: say it once
+          ;; eight pads with the same controls: say them once
           (format out "Pads 1 to 8 start as ~{~a~^, ~}, at pitches 36 to 43, and each has these controls, as :pad1-tune, :pad2-decay and so on (the defaults shown are the kick's):~%~%~{~a~}"
                   (mapcar #'first *pad-defaults*)
                   (loop for p in (subseq (device-params :drums) 0 dp-size)

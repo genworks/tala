@@ -220,6 +220,8 @@ a { color: inherit; text-decoration: none; }
 .roll-wrap { position: absolute; inset: 0; overflow: auto; }
 #roll { display: block; cursor: crosshair; }
 .hint { color: var(--dim); padding: 14px; }
+.pads button.sampled { border-color: var(--accent); }
+.pad-sample { display: flex; align-items: center; gap: 6px; color: var(--dim); margin: 6px 0; }
 .warp { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .warp label { display: inline-flex; align-items: center; gap: 4px; }
 .input-body { flex-direction: column; align-items: stretch; gap: 6px; min-width: 190px; }

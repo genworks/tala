@@ -26,13 +26,15 @@
 ;; thread is the difference between sound and a dropout.
 ;;
 ;; The score, SC: [tracks, offset of the lanes, offset of the regions,
-;; offset of the session table, then for each track its offset and count,
+;; offset of the session table, offset of the pad table, then for each
+;; track its offset and count,
 ;; the notes (beat length pitch velocity), the session clips' notes, the
 ;; lanes: count, and each lane's parameter index, count, (beat
 ;; value)..., the regions, seven numbers each (devices.lisp), and the
 ;; session table: for each track the offset and count of its slots, and
 ;; for each slot the offset and count of its notes and its length, zero
-;; for an empty slot].  POOL is the song's recorded sound (samples.lisp).
+;; for an empty slot, then the pad table: for each track eight numbers,
+;; the region each drum pad plays plus one, zero for none].  POOL is the song's recorded sound (samples.lisp).
 ;;
 ;; The session: a track plays its arrangement (MODE 0) until a clip is
 ;; launched on it (MODE 1), and then that clip, looping, until it is
@@ -92,8 +94,8 @@ resamples for the device, if it must, after the engine.")
 
 (define-dsp seq-seek ((s :buf) (sc :buf) (b :int) (ti :int)) :nil
   "Track TI's next note: the first at or after the seek beat."
-  (let* ((o (ifloor (aref sc (+ 4 (* 2 ti)))))
-         (n (ifloor (aref sc (+ 5 (* 2 ti)))))
+  (let* ((o (ifloor (aref sc (+ 5 (* 2 ti)))))
+         (n (ifloor (aref sc (+ 6 (* 2 ti)))))
          (seek (sg g-seek))
          (i 0))
     (loop while (and (< i n) (< (aref sc (+ o (* 4 i))) seek))
@@ -102,8 +104,8 @@ resamples for the device, if it must, after the engine.")
 
 (define-dsp seq-due ((s :buf) (sc :buf) (b :int) (ti :int)) :inline
   "A positive number when track TI's next note has come."
-  (let* ((o (ifloor (aref sc (+ 4 (* 2 ti)))))
-         (n (ifloor (aref sc (+ 5 (* 2 ti)))))
+  (let* ((o (ifloor (aref sc (+ 5 (* 2 ti)))))
+         (n (ifloor (aref sc (+ 6 (* 2 ti)))))
          (i (ifloor (st tr-idx))))
     (if (and (< i n) (<= (aref sc (+ o (* 4 i))) (sg g-beat))) 1d0 0d0)))
 
@@ -113,7 +115,7 @@ resamples for the device, if it must, after the engine.")
 
 (define-dsp seq-offset ((s :buf) (sc :buf) (b :int) (ti :int)) :num
   "Where track TI's current note is in the score, as a double."
-  (+ (aref sc (+ 4 (* 2 ti))) (* 4d0 (dfloor (st tr-idx)))))
+  (+ (aref sc (+ 5 (* 2 ti))) (* 4d0 (dfloor (st tr-idx)))))
 
 (define-dsp metronome ((s :buf) (p :buf)) :inline
   "This frame's click: a short tone on each beat, higher on the first of
@@ -331,13 +333,14 @@ param-size).  A device's on switch sits just before its parameters."
 (defun tracks-of-kind (placed kind)
   (remove kind placed :key (lambda (x) (getf x :kind)) :test-not #'eq))
 
-(defun note-on-form (instrument)
-  "The call that starts a note on INSTRUMENT, placed, with PITCH VEL GATE."
+(defun note-on-form (instrument index)
+  "The call that starts a note on INSTRUMENT, placed, of the track
+numbered INDEX, with PITCH VEL GATE."
   (let ((b (getf instrument :state))
         (pb (getf instrument :param)))
     (ecase (getf instrument :kind)
       (:synth `(synth-note-on s p ,b ,pb pitch vel gate))
-      (:drums `(drum-note-on s p ,b ,pb pitch vel gate))
+      (:drums `(drum-note-on s p sc ,b ,pb ,index pitch vel gate))
       ;; a clip's event carries its region where a note has a pitch
       (:sampler `(sampler-start s sc ,b pitch vel gate 0d0)))))
 
@@ -353,9 +356,10 @@ param-size).  A device's on switch sits just before its parameters."
   "The call that makes INSTRUMENT's sound on the bus at BUS."
   (let ((b (getf instrument :state))
         (pb (getf instrument :param)))
-    (if (eq (getf instrument :kind) :sampler)
-        `(sampler-run s pool ,b ,bus)
-        `(,(device-kind-run (device-kind (getf instrument :kind))) s p ,b ,pb ,bus))))
+    (case (getf instrument :kind)
+      (:sampler `(sampler-run s pool ,b ,bus))
+      (:drums `(drum-run s p pool ,b ,pb ,bus))
+      (t `(,(device-kind-run (device-kind (getf instrument :kind))) s p ,b ,pb ,bus)))))
 
 (defun device-run-form (device own-bus placed)
   "The call that runs DEVICE, placed, on the bus at OWN-BUS, when it is on."
@@ -397,7 +401,7 @@ param-size).  A device's on switch sits just before its parameters."
                               (pitch (aref sc (+ e 2)))
                               (vel (aref sc (+ e 3)))
                               (gate (aref sc (+ e 1))))
-                         ,(note-on-form instrument)
+                         ,(note-on-form instrument index)
                          (setf (aref s ,(+ tb tr-sidx)) (+ (aref s ,(+ tb tr-sidx)) 1d0))))
               (when (< (aref s ,(+ tb tr-mode)) 0.5d0)
                 (loop while (> (seq-due s sc ,tb ,index) 0.5d0)
@@ -405,7 +409,7 @@ param-size).  A device's on switch sits just before its parameters."
                                 (pitch (aref sc (+ e 2)))
                                 (vel (aref sc (+ e 3)))
                                 (gate (aref sc (+ e 1))))
-                           ,(note-on-form instrument)
+                           ,(note-on-form instrument index)
                            (seq-note s sc ,tb ,index)))))
             ,(instrument-run-form instrument bus)))
       ,@(mapcar (lambda (d) (device-run-form d bus placed)) (getf track :devices))
@@ -476,11 +480,11 @@ the state and parameter sizes after it as values."
                          when (eq (getf instrument :kind) :drums)
                            collect `(setf (aref s ,(+ b dk-noise)) ,(float (+ 54321 (* 7919 i)) 1d0)))
                  nil)
-               (engine-note (s p ti pitch vel gate)
+               (engine-note (s p sc ti pitch vel gate)
                  (cond ,@(loop for track in tracks
                                for i from 0
                                unless (eq (getf (getf track :instrument) :kind) :sampler)
-                                 collect `((= ti ,i) ,(note-on-form (getf track :instrument)))))
+                                 collect `((= ti ,i) ,(note-on-form (getf track :instrument) i))))
                  nil)
                (engine-note-off (s ti pitch)
                  (cond ,@(loop for track in tracks
@@ -601,7 +605,7 @@ PARAM-SIZE are its arrays' lengths, PLACED its layout."
       break;
     case 'seek': s[G_BEAT] = m.beat; s[G_SEEK] = m.beat; s[G_RESEEK] = 1; break;
     case 'note':
-      engineNote(s, this.p, m.track, m.pitch, m.vel, -1);
+      engineNote(s, this.p, this.sc, m.track, m.pitch, m.vel, -1);
       if (m.rec) this.port.postMessage({ rec: 'on', track: m.track, pitch: m.pitch, vel: m.vel, beat: s[G_BEAT] });
       break;
     case 'noteoff':
