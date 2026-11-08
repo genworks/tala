@@ -29,7 +29,7 @@
 ;; offset of the session table, then for each track its offset and count,
 ;; the notes (beat length pitch velocity), the session clips' notes, the
 ;; lanes: count, and each lane's parameter index, count, (beat
-;; value)..., the regions, six numbers each (devices.lisp), and the
+;; value)..., the regions, seven numbers each (devices.lisp), and the
 ;; session table: for each track the offset and count of its slots, and
 ;; for each slot the offset and count of its notes and its length, zero
 ;; for an empty slot].  POOL is the song's recorded sound (samples.lisp).

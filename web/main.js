@@ -308,6 +308,15 @@ T.sampleTest = async function sampleTest() {
   const parity = await T.selfTest(48000 * 8);
   checks.parity = parity.ok;
   checks.heard = parity.peak > 0.1;
+  // stretched: the song's tempo away from the clips' own, and repitched
+  await T.send(form('set-tempo', 97));
+  await T.synced;
+  checks.parityStretched = (await T.selfTest(48000 * 8)).ok;
+  await T.send(form('set-clip', track.name, 'Test voice', kw('warp'), kw('repitch')), form('set-tempo', 151));
+  await T.synced;
+  checks.parityRepitched = (await T.selfTest(48000 * 8)).ok;
+  await T.send(form('set-tempo', 120));
+  await T.synced;
   await T.play(0);
   await new Promise((r) => setTimeout(r, 700));
   checks.plays = T.peaks && Math.max(...T.peaks) > 0.01;
@@ -334,6 +343,7 @@ T.sampleTest = async function sampleTest() {
   renderDetail();
   const view = $('#detail-body canvas');
   checks.clipView = Boolean(view);
+  checks.warpControl = Boolean(document.querySelector('[data-ctl="warp"]'));
   const vbox = view.getBoundingClientRect();
   const sampleSeconds = T.song.samples[0].seconds;
   const toX = vbox.left + (0.25 + trimmed.length * 0.5) / sampleSeconds * view.width;

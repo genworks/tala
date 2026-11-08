@@ -109,6 +109,10 @@ point; the gate as it stands."
        "key" (or (getf device :key) :null)
        "param" (getf place :param)))
 
+(defvar *json-tempo* 120
+  "The tempo of the song being written, which an audio clip's seconds a
+beat depend on.")
+
 (defun track-json (track place index)
   (obj "id" (getf track :id)
        "index" index
@@ -136,7 +140,10 @@ point; the gate as it stands."
                               "scene" (or (getf clip :scene) :null)
                               "offset" (getf clip :offset 0)
                               "gain" (getf clip :gain 0)
-                              "transpose" (getf clip :transpose 0)))
+                              "transpose" (getf clip :transpose 0)
+                              "warp" (if (getf clip :warp) (string-downcase (getf clip :warp)) :null)
+                              "bpm" (or (getf clip :bpm) :null)
+                              "spb" (if (getf clip :sample) (clip-seconds-per-beat clip *json-tempo*) :null)))
                        (getf track :clips))
        "automation" (mapcar (lambda (lane)
                               (obj "device" (or (getf lane :device) :null)
@@ -177,10 +184,11 @@ point; the gate as it stands."
            "quantize" (getf spec :quantize 4)
            "scenes" (mapcar (lambda (s) (obj "id" (getf s :id) "name" (getf s :name)))
                             (getf spec :scenes))
-           "tracks" (loop for track in tracks
-                          for place in placed
-                          for i from 0
-                          collect (track-json track place i))
+           "tracks" (let ((*json-tempo* (getf spec :tempo)))
+                      (loop for track in tracks
+                            for place in placed
+                            for i from 0
+                            collect (track-json track place i)))
            "returns" (loop for track in returns
                            for place in (nthcdr (length tracks) placed)
                            for i from 0

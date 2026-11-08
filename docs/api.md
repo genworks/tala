@@ -216,11 +216,36 @@ and sends as any track does.
   says.
 - `(delete-sample sample)` — one no clip is using.
 - `(add-audio-clip track sample &key start length offset gain transpose
-  name)` — the sample on an audio track from beat `:start`.  `:offset`
-  is where in the sample to begin, in seconds; `:length`, in beats,
-  runs to the sample's end when unsaid; `:gain` is in dB; `:transpose`
-  in semitones changes pitch and speed together.
-- `(set-clip track clip &key offset gain transpose ...)` changes them.
+  warp bpm replace name)` — the sample on an audio track from beat
+  `:start`.  `:offset` is where in the sample to begin, in seconds;
+  `:length`, in beats, runs to the sample's end when unsaid; `:gain` is
+  in dB; `:transpose` in semitones.  `:replace t` makes it take the
+  place of whatever it covers on the timeline, as a recorded take does.
+- `(set-clip track clip &key offset gain transpose warp bpm ...)` changes
+  them.
+- `(fit-clip track clip bars)` — warps the clip so its sample, from where
+  the clip begins in it to the end, takes BARS bars at any tempo: how a
+  loop of known length is made to follow the song.
+
+**Warp.**  An audio clip has a tempo of its own, its `:bpm`, and follows
+the song's: at a song tempo of 140, a clip of 70 BPM plays twice as fast.
+`:warp` says how:
+
+- `:stretch`, the default for a new clip — its timing follows the tempo
+  and its pitch stays; `:transpose` moves only the pitch.  The sound is
+  cut in grains and laid out again, which the track's `:grain` control
+  sizes: shorter for drums, longer for voices and pads.  At its own
+  tempo, untransposed, it is the recording exactly.
+- `:repitch` — like a record sped up: faster is higher.  Clean, no
+  grains; `:transpose` does nothing.
+- `nil` — plays at its own speed whatever the tempo; `:transpose` changes
+  pitch and speed together.
+
+A new clip's `:bpm` is a tempo in its sample's name ("Break 92 BPM"),
+else the song's tempo then, so it sounds as it was until the tempo
+changes.  When a loop's tempo is not known but its length in bars is,
+use `fit-clip`.  A clip's BPM out by half or double plays at half or
+double speed: fix it with `:bpm`.
 
 The person can also record onto an armed audio track from the page, from
 a microphone or interface chosen on the track's device panel.  Recording
@@ -263,11 +288,11 @@ and, with `hear`, its shape; the words only if someone gave them.  Do not
 guess.  When the words matter, ask the person, and keep their answer
 with `set-sample`.
 
-Recorded sound plays at its own speed and does not follow the tempo, so
-place a phrase to start on a beat and let it run.  To use part of a
-sample, read its `:phrases`, then give a clip the phrase's start as
-`:offset` and its length in beats, which at TEMPO is seconds x TEMPO /
-60.  Spoken word sits best in the gaps of a groove, often before a
+Speech is usually best left at its own speed (`:warp nil`), so a change
+of tempo does not stretch the voice: place a phrase to start on a beat
+and let it run.  To use part of a sample, read its `:phrases`, then give
+a clip the phrase's start as `:offset` and its length in beats, which at
+the clip's BPM is seconds x BPM / 60.  Spoken word sits best in the gaps of a groove, often before a
 drop: cut the low end with `:eq`, send it to a delay or reverb return,
 and duck nothing under it unless the words get lost.  Transposing down
 a few semitones makes a voice darker and slower.
@@ -340,6 +365,10 @@ People describe sound in words that are not literal.  Read them as:
   envelope, a monophonic line that slides.
 - **a build**, **a riser**: tension over bars, from opening filters and
   rising noise; **a drop**: everything landing together after it.
+- **warp it**, **get it on the grid**, **seg BPM**: a loop following the
+  tempo, which is `:warp` and the clip's `:bpm` (or `fit-clip` from its
+  bars).  **Warbly**, **phasey** stretched audio: try another `:grain`
+  on its track, longer for sustained sound, or `:repitch`.
 
 A style is a set of such choices, from what you know of the music: its
 tempo range, its drum pattern, how the bass sits against the kick, what

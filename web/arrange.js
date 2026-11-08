@@ -64,8 +64,7 @@ function drawWaveform(canvas, clip, fill = 'rgba(0,0,0,.65)') {
   if (!sample || sample.missing || T.pool.length < sample.left + sample.frames) return;
   const g = canvas.getContext('2d');
   g.fillStyle = fill;
-  const rate = Math.pow(2, clip.transpose / 12);
-  const framesPerBeat = 48000 * 60 / T.song.tempo * rate;
+  const framesPerBeat = 48000 * clip.spb;
   const first = clip.offset * 48000;
   const shown = Math.min(sample.frames - first, clip.length * framesPerBeat);
   const width = Math.min(canvas.width, Math.ceil(shown / (clip.length * framesPerBeat) * canvas.width));
@@ -147,8 +146,7 @@ function trimBeats(clip, dx) {
   const wanted = Math.round(dx / T.ppb / step) * step;
   let least = -clip.start;
   if (clip.sample) {
-    const rate = Math.pow(2, clip.transpose / 12);
-    least = Math.max(least, -clip.offset / (60 / T.song.tempo) / rate);
+    least = Math.max(least, -clip.offset / clip.spb);
   }
   return Math.max(least, Math.min(clip.length - step, wanted));
 }

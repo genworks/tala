@@ -534,21 +534,84 @@ SOURCE, so it ducks when SOURCE plays; nil listens to its own track."
     (error "Audio clips go on an audio track, one made with (add-track name :instrument :sampler); ~s is not one."
            (getf found :name))))
 
-(define-op add-audio-clip (track sample &key (start 0) length (offset 0) (gain 0) (transpose 0) name scene)
+(defun bpm-in-name (name)
+  "A tempo a sample's NAME gives, as in \"loop 140bpm\" or
+\"Break_92_BPM\", or nil."
+  (let ((at (search "bpm" name :test #'char-equal)))
+    (when at
+      (let* ((end (or (position-if (lambda (c) (digit-char-p c)) name :end at :from-end t) -1))
+             (from (1+ (or (position-if-not #'digit-char-p name :end (1+ end) :from-end t) -1)))
+             (between (subseq name (1+ end) at)))
+        (when (and (>= end 0) (every (lambda (c) (find c " _-")) between))
+          (let ((n (parse-integer name :start from :end (1+ end))))
+            (when (<= 40 n 300) n)))))))
+
+(defun check-warp (warp)
+  (unless (member warp '(nil :stretch :repitch))
+    (error "Warp is :stretch (follows the tempo, keeps its pitch), :repitch (follows it like a record sped up) or nil (plays at its own speed), not ~s." warp)))
+
+(defun cut-front (clip beats tempo)
+  "CLIP begins BEATS later and ends where it did; its sound stays where
+it was in the song."
+  (let ((snap (lambda (x) (/ (round (* x 1000000)) 1000000d0))))
+    (put! clip :start (funcall snap (+ (getf clip :start) beats)))
+    (put! clip :length (funcall snap (- (getf clip :length) beats)))
+    (put! clip :offset (funcall snap (max 0 (+ (getf clip :offset 0)
+                                               (* beats (clip-seconds-per-beat clip tempo))))))
+    clip))
+
+(defun clear-range! (spec found from to)
+  "Make room on track FOUND's timeline between beats FROM and TO, as a
+take recorded there does: audio clips inside go, clips across an edge
+are cut back to it, and one across both is split in two."
+  (let ((tempo (getf spec :tempo))
+        (kept '()))
+    (dolist (c (getf found :clips))
+      (let* ((start (getf c :start))
+             (end (+ start (getf c :length))))
+        (cond ((or (getf c :scene) (not (getf c :sample)) (<= end from) (>= start to))
+               (push c kept))
+              ((and (>= start from) (<= end to)))
+              ((>= start from)
+               (push (cut-front c (- to start) tempo) kept))
+              ((<= end to)
+               (put! c :length (- from start))
+               (push c kept))
+              (t
+               (let ((after (cut-front (copy-tree c) (- to start) tempo)))
+                 (put! after :id (next-id! spec))
+                 (put! c :length (- from start))
+                 (push c kept)
+                 (push after kept))))))
+    (put! found :clips (nreverse kept))))
+
+(define-op add-audio-clip (track sample &key (start 0) length (offset 0) (gain 0) (transpose 0)
+                                 (warp :stretch) bpm replace name scene)
   "SAMPLE on an audio TRACK from beat START.  OFFSET is where in the
 sample it starts, in seconds; LENGTH, in beats, runs to the sample's end
-when unsaid; GAIN is in dB; TRANSPOSE in semitones changes its pitch and
-speed together.  With SCENE it goes in that scene's slot of the session."
+when unsaid; GAIN is in dB; TRANSPOSE in semitones.  WARP :stretch (the
+default) makes it follow the song's tempo from its own BPM keeping its
+pitch, :repitch follows it like a record sped up, nil plays it at its
+own speed (and a transpose speeds it up too).  BPM is the tempo the
+sample was played at: a tempo in its name, else the song's.  With
+REPLACE it takes the place of what it covers on the timeline, as a
+recorded take does.  With SCENE it goes in that scene's slot of the
+session."
+  (check-warp warp)
   (edit-song! (song)
               (lambda (spec)
                 (let* ((found (find-track spec track))
                        (s (find-sample spec sample))
-                       (rate (expt 2d0 (/ transpose 12d0)))
-                       (seconds (/ (- (sample-seconds s) offset) rate))
-                       (beats (or length (/ (round (* 1000 seconds (/ (getf spec :tempo) 60))) 1000d0)))
                        (clip (list :id (next-id! spec) :name (or name (getf s :name))
-                                   :start start :length beats :sample (getf s :id)
-                                   :offset offset :gain gain :transpose transpose)))
+                                   :start start :length 1 :sample (getf s :id)
+                                   :offset offset :gain gain :transpose transpose))
+                       (seconds (progn
+                                  (when warp
+                                    (put! clip :warp warp)
+                                    (put! clip :bpm (or bpm (bpm-in-name (getf s :name)) (getf spec :tempo))))
+                                  (- (sample-seconds s) offset)))
+                       (beats (or length (/ (round (* 1000 (/ seconds (clip-seconds-per-beat clip (getf spec :tempo))))) 1000d0))))
+                  (put! clip :length beats)
                   (check-sampler found)
                   (when scene
                     (let ((in (find-scene spec scene)))
@@ -559,6 +622,8 @@ speed together.  With SCENE it goes in that scene's slot of the session."
                                (plusp seconds) (plusp beats))
                     (error "A clip starts at a beat from 0 up, at an offset within the sample, which is ~,2f seconds long."
                            (sample-seconds s)))
+                  (when (and replace (not scene))
+                    (clear-range! spec found start (+ start beats)))
                   (put! found :clips (append (getf found :clips) (list clip)))
                   (list :clip (getf clip :id) :track (getf found :name) :start start :length beats)))))
 
@@ -722,12 +787,25 @@ goes in that scene's slot of the session instead of on the timeline."
                   (put! found :clips (remove c (getf found :clips)))
                   (list :deleted (getf c :id))))))
 
-(define-op set-clip (track clip &key name start length (loop nil loop?) offset gain transpose)
+(define-op set-clip (track clip &key name start length (loop nil loop?) offset gain transpose
+                            (warp nil warp?) bpm)
   "Move, resize or rename a clip; :loop sets how often its notes repeat.
-On an audio clip, :offset (seconds into the sample), :gain and :transpose."
+On an audio clip, :offset (seconds into the sample), :gain, :transpose,
+:warp (:stretch, :repitch or nil) and :bpm, the tempo it was played at."
+  (when warp? (check-warp warp))
+  (when (and bpm (not (and (realp bpm) (<= 20 bpm 999))))
+    (error "A clip's BPM is a tempo from 20 to 999, not ~s." bpm))
   (edit-song! (song)
               (lambda (spec)
                 (let ((c (find-clip (find-track spec track) clip)))
+                  (when (and (or warp? bpm) (not (getf c :sample)))
+                    (error "Warp is for audio clips."))
+                  (when warp?
+                    (if warp
+                        (progn (put! c :warp warp)
+                               (unless (getf c :bpm) (put! c :bpm (getf spec :tempo))))
+                        (remf c :warp)))
+                  (when bpm (put! c :bpm bpm))
                   (when name (put! c :name name))
                   (when start (put! c :start (max 0 start)))
                   (when length (put! c :length (max 0.0625 length)))
@@ -735,8 +813,28 @@ On an audio clip, :offset (seconds into the sample), :gain and :transpose."
                   (when offset (put! c :offset (max 0 offset)))
                   (when gain (put! c :gain (max -60 (min 24 gain))))
                   (when transpose (put! c :transpose (max -36 (min 36 transpose))))
-                  (list :clip (getf c :id) :start (getf c :start) :length (getf c :length)
-                        :loop (getf c :loop))))))
+                  (list* :clip (getf c :id) :start (getf c :start) :length (getf c :length)
+                         (if (getf c :sample)
+                             (list :warp (getf c :warp) :bpm (getf c :bpm))
+                             (list :loop (getf c :loop))))))))
+
+(define-op fit-clip (track clip bars)
+  "Warp an audio CLIP so its sample, from where the clip begins in it to
+its end, takes BARS bars, at this tempo or any other: how a loop of a
+known length is set to follow the song.  The clip becomes that long."
+  (unless (and (realp bars) (plusp bars))
+    (error "Fit a clip to a number of bars, not ~s." bars))
+  (edit-song! (song)
+              (lambda (spec)
+                (let* ((c (find-clip (find-track spec track) clip))
+                       (s (or (and (getf c :sample) (find-sample spec (getf c :sample)))
+                              (error "Only an audio clip is fitted.")))
+                       (beats (* bars (song-beats-per-bar spec)))
+                       (seconds (- (sample-seconds s) (getf c :offset 0))))
+                  (put! c :warp (or (getf c :warp) :stretch))
+                  (put! c :bpm (/ (round (* 1000 (/ (* beats 60) seconds))) 1000d0))
+                  (put! c :length beats)
+                  (list :clip (getf c :id) :bpm (getf c :bpm) :length beats)))))
 
 (define-op trim-clip-start (track clip beats)
   "Move a clip's start BEATS later (or earlier, when negative) and keep
@@ -748,24 +846,23 @@ song.  How the front of a clip is cut off."
                 (let* ((c (find-clip (find-track spec track) clip))
                        (start (getf c :start))
                        (length (getf c :length))
-                       (rate (expt 2d0 (/ (getf c :transpose 0) 12d0)))
-                       (seconds-per-beat (/ 60d0 (getf spec :tempo)))
+                       (tempo (getf spec :tempo))
                        ;; no further than a sixteenth before the end, no
                        ;; earlier than the song's start or the sample's
                        (most (- length 0.0625d0))
                        (least (max (- start)
                                    (if (getf c :sample)
-                                       (- (/ (getf c :offset 0) seconds-per-beat rate))
+                                       (- (/ (getf c :offset 0) (clip-seconds-per-beat c tempo)))
                                        most-negative-double-float)))
                        (d (float (max least (min most beats)) 1d0))
                        (snap (lambda (x) (/ (round (* x 1000000)) 1000000d0))))
                   (unless (realp beats)
                     (error "Trim by a number of beats, not ~s." beats))
-                  (put! c :start (funcall snap (+ start d)))
-                  (put! c :length (funcall snap (- length d)))
                   (if (getf c :sample)
-                      (put! c :offset (funcall snap (max 0 (+ (getf c :offset 0) (* d seconds-per-beat rate)))))
+                      (cut-front c d tempo)
                       (let ((repeat (getf c :loop)))
+                        (put! c :start (funcall snap (+ start d)))
+                        (put! c :length (funcall snap (- length d)))
                         (put! c :notes
                               (if (and repeat (< repeat length))
                                   ;; a looping pattern turns, so the same note

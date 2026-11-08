@@ -349,22 +349,28 @@ as a plain saw.  Anything else is set through the pads' parameters.")
               (setf (aref s (+ o dv-active)) 0d0))))))))
 
 ;;; The audio player: a track of recorded sound.  A clip is a row of the
-;;; score's region table, six numbers (where the left and right channels
-;;; are in the pool, the first and last frame, the rate, the gain), and
-;;; its event's pitch is that row's number; so moving, trimming or
-;;; retuning a clip is data, and the program is the same.
+;;; score's region table, seven numbers (where the left and right
+;;; channels are in the pool, the first and last frame, the speed, the
+;;; gain, the pitch), and its event's pitch is that row's number; so
+;;; moving, trimming, retuning or warping a clip is data, and the program
+;;; is the same.  Where speed and pitch differ (a warped clip away from
+;;; its tempo), two grains at a time are read at the pitch, each starting
+;;; again where the speed has got to, and crossfaded.
 
 (define-params sm :sampler
   (:fade "Fade" :default 3 :min 0.1 :max 200 :unit "ms" :scale :log
    :doc "How fast a clip fades in and out at its edges. A few milliseconds stops clicks; more softens a cut through a word.")
-  (:level "Level" :default 0 :min -60 :max 12 :unit "dB" :doc "The level of every clip on this track."))
+  (:level "Level" :default 0 :min -60 :max 12 :unit "dB" :doc "The level of every clip on this track.")
+  (:grain "Grain" :default 40 :min 5 :max 200 :unit "ms" :scale :log
+   :doc "A warped clip away from its own tempo is cut in grains this long and laid out again. Shorter suits drums, longer suits voices and pads."))
 
-(define-slots sa fade level age)
-(define-slots sv active pos end left right rate gain gate stage env age)
+(define-slots sa fade level age grain)
+(define-slots sv active pos end left right rate gain gate stage env age pitch a1 a2 phase)
 
 (define-dsp sampler-tick ((s :buf) (p :buf) (b :int) (pb :int)) :nil
   (setf (st sa-fade) (/ 1000d0 (* (pv sm-fade) (sg g-sr))))
-  (setf (st sa-level) (db-gain (pv sm-level))))
+  (setf (st sa-level) (db-gain (pv sm-level)))
+  (setf (st sa-grain) (/ 1000d0 (* (pv sm-grain) (sg g-sr)))))
 
 (define-dsp sampler-release ((s :buf) (b :int)) :nil
   (dotimes (v 4)
@@ -374,7 +380,7 @@ as a plain saw.  Anything else is set through the pads' parameters.")
 
 (define-dsp sampler-start ((s :buf) (sc :buf) (b :int) (region :num) (vel :num) (gate :num) (skip :num)) :nil
   "Region number REGION on a free voice for GATE beats, SKIP beats in."
-  (let* ((row (+ (ifloor (aref sc 2)) (* 6 (ifloor region))))
+  (let* ((row (+ (ifloor (aref sc 2)) (* 7 (ifloor region))))
          (rate (aref sc (+ row 4)))
          (pos (+ (aref sc (+ row 2)) (/ (* skip rate) (sg g-bpf))))
          (end (aref sc (+ row 3)))
@@ -401,7 +407,11 @@ as a plain saw.  Anything else is set through the pads' parameters.")
         (setf (aref s (+ o sv-gain)) (* (aref sc (+ row 5)) (/ vel 127d0)))
         (setf (aref s (+ o sv-gate)) gate)
         (setf (aref s (+ o sv-stage)) 1d0)
-        (setf (aref s (+ o sv-env)) 0d0)))))
+        (setf (aref s (+ o sv-env)) 0d0)
+        (setf (aref s (+ o sv-pitch)) (aref sc (+ row 6)))
+        (setf (aref s (+ o sv-a1)) pos)
+        (setf (aref s (+ o sv-a2)) pos)
+        (setf (aref s (+ o sv-phase)) 0.5d0)))))
 
 (define-dsp sampler-chase ((s :buf) (sc :buf) (b :int) (ti :int)) :nil
   "After a jump: what was playing stops, and a clip the new place falls
@@ -417,9 +427,74 @@ inside starts from there.  A long clip must not wait for its beginning."
         (when (and (< start seek) (> stop seek))
           (sampler-start s sc b (aref sc (+ e 2)) (aref sc (+ e 3)) (- stop seek) (- seek start)))))))
 
+(define-dsp sample-at ((pool :pool) (base :int) (pos :num) (end :num)) :num
+  "A channel at BASE in the pool, at frame POS, between frames; never
+past END."
+  (let* ((at (max 0d0 (min pos (- end 1d0))))
+         (i (ifloor at))
+         (f (- at (dfloat i)))
+         (j (if (>= (dfloat (+ i 1)) end) i (+ i 1)))
+         (a (dfloat (aref pool (+ base i)))))
+    (+ a (* f (- (dfloat (aref pool (+ base j))) a)))))
+
+(define-dsp grain-start ((pool :pool) (base :int) (target :num) (follow :num) (pitch :num) (end :num)) :num
+  "Where near TARGET a new grain should start so that it carries on from
+the grain reading at FOLLOW: of the places up to 256 frames either side,
+the one whose coming frames are most like FOLLOW's."
+  (let* ((best target)
+         (most -1d300))
+    (dotimes (n 65)
+      (let* ((at (+ target (* 8d0 (dfloat (- n 32)))))
+             (sum 0d0))
+        (when (>= at 0d0)
+          (dotimes (j 48)
+            (let* ((step (* 3d0 pitch (dfloat j))))
+              (setf sum (+ sum (* (sample-at pool base (+ at step) end)
+                                  (sample-at pool base (+ follow step) end))))))
+          (when (> sum most)
+            (setf most sum)
+            (setf best at)))))
+    best))
+
+(define-dsp sampler-plain ((s :buf) (pool :pool) (o :int) (bus :int) (pos :num) (end :num) (g :num)) :nil
+  (let* ((lo (ifloor (aref s (+ o sv-left))))
+         (ro (ifloor (aref s (+ o sv-right)))))
+    (setf (aref s bus) (+ (aref s bus) (* (sample-at pool lo pos end) g)))
+    (setf (aref s (+ bus 1)) (+ (aref s (+ bus 1)) (* (sample-at pool ro pos end) g)))))
+
+(define-dsp sampler-grains ((s :buf) (pool :pool) (o :int) (bus :int) (pos :num) (end :num) (g :num) (step :num)) :nil
+  "Two grains read at the voice's pitch, half a grain apart, each faded in
+and out by a triangle; one starts again whenever its fade is at nothing,
+placed so that at its loudest it reads near POS, where the speed has got
+to, and where it carries on smoothly from the other (GRAIN-START)."
+  (let* ((lo (ifloor (aref s (+ o sv-left))))
+         (ro (ifloor (aref s (+ o sv-right))))
+         (pitch (aref s (+ o sv-pitch)))
+         (back (/ (- pitch (aref s (+ o sv-rate))) (* 2d0 step)))
+         (a1 (aref s (+ o sv-a1)))
+         (a2 (aref s (+ o sv-a2)))
+         (phase (aref s (+ o sv-phase)))
+         (u (- (* 2d0 phase) 1d0))
+         (w1 (- 1d0 (max u (- u))))
+         (w2 (- 1d0 w1))
+         (l (+ (* w1 (sample-at pool lo a1 end)) (* w2 (sample-at pool lo a2 end))))
+         (r (+ (* w1 (sample-at pool ro a1 end)) (* w2 (sample-at pool ro a2 end))))
+         (next (+ phase step)))
+    (setf (aref s bus) (+ (aref s bus) (* l g)))
+    (setf (aref s (+ bus 1)) (+ (aref s (+ bus 1)) (* r g)))
+    (setf (aref s (+ o sv-a1)) (+ a1 pitch))
+    (setf (aref s (+ o sv-a2)) (+ a2 pitch))
+    (when (and (< phase 0.5d0) (>= next 0.5d0))
+      (setf (aref s (+ o sv-a2)) (grain-start pool lo (- pos back) (aref s (+ o sv-a1)) pitch end)))
+    (when (>= next 1d0)
+      (setf next (- next 1d0))
+      (setf (aref s (+ o sv-a1)) (grain-start pool lo (- pos back) (aref s (+ o sv-a2)) pitch end)))
+    (setf (aref s (+ o sv-phase)) next)))
+
 (define-dsp sampler-run ((s :buf) (pool :pool) (b :int) (bus :int)) :nil
   (let* ((fade (st sa-fade))
-         (level (st sa-level)))
+         (level (st sa-level))
+         (step (st sa-grain)))
     (dotimes (v 4)
       (let* ((o (+ b sa-size (* v sv-size))))
         (when (> (aref s (+ o sv-active)) 0.5d0)
@@ -427,15 +502,7 @@ inside starts from there.  A long clip must not wait for its beginning."
                  (pos (aref s (+ o sv-pos)))
                  (rate (aref s (+ o sv-rate)))
                  (end (aref s (+ o sv-end)))
-                 (i (ifloor pos))
-                 (f (- pos (dfloat i)))
-                 (j (if (>= (dfloat (+ i 1)) end) i (+ i 1)))
-                 (lo (ifloor (aref s (+ o sv-left))))
-                 (ro (ifloor (aref s (+ o sv-right))))
-                 (a (dfloat (aref pool (+ lo i))))
-                 (c (dfloat (aref pool (+ ro i))))
-                 (l (+ a (* f (- (dfloat (aref pool (+ lo j))) a))))
-                 (r (+ c (* f (- (dfloat (aref pool (+ ro j))) c))))
+                 (apart (- rate (aref s (+ o sv-pitch))))
                  (stage (aref s (+ o sv-stage)))
                  (env (aref s (+ o sv-env)))
                  (next (if (< stage 1.5d0) (min 1d0 (+ env fade)) (- env fade)))
@@ -449,8 +516,9 @@ inside starts from there.  A long clip must not wait for its beginning."
               (setf (aref s (+ o sv-stage)) 2d0))
             (when (or (<= next 0d0) (>= (+ pos rate) (- end 1d0)))
               (setf (aref s (+ o sv-active)) 0d0))
-            (setf (aref s bus) (+ (aref s bus) (* l g)))
-            (setf (aref s (+ bus 1)) (+ (aref s (+ bus 1)) (* r g)))))))))
+            (if (or (> apart 1d-9) (< apart -1d-9))
+                (sampler-grains s pool o bus pos end g step)
+                (sampler-plain s pool o bus pos end g))))))))
 
 ;;; Effects.  Each takes the bus in place, two slots, left and right.
 

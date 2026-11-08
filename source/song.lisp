@@ -269,15 +269,30 @@ the control's range is held at the end, as a knob is."
              (position key (device-params (getf spec :kind)) :key #'param-key)))
         (+ (getf placed-track :param) (ecase key (:gain tp-gain) (:pan tp-pan))))))
 
-(defun clip-region (clip samples layout sr)
-  "The six numbers of the audio CLIP's region."
+(defun clip-seconds-per-beat (clip tempo)
+  "How much of its sample an audio CLIP plays in a beat, in seconds.  A
+warped clip goes at its own :bpm, so it follows the song's TEMPO; an
+unwarped one plays at its own speed, which its transpose changes."
+  (if (getf clip :warp)
+      (/ 60d0 (getf clip :bpm tempo))
+      (* (expt 2d0 (/ (getf clip :transpose 0) 12d0)) (/ 60d0 tempo))))
+
+(defun clip-region (clip samples layout sr tempo)
+  "The seven numbers of the audio CLIP's region: where its channels are,
+its first and last frame, its speed, its gain and its pitch.  Speed and
+pitch part only when a stretched clip plays away from its own tempo or
+is transposed."
   (let* ((sample (find (getf clip :sample) samples :key (lambda (s) (getf s :id))))
          (row (assoc (getf sample :id) layout))
          (frames (or (fourth row) 0))
-         (start (min frames (round (* (getf clip :offset 0) sr)))))
+         (start (min frames (round (* (getf clip :offset 0) sr))))
+         (shift (d-exp2 (/ (float (getf clip :transpose 0) 1d0) 12d0)))
+         (warp (getf clip :warp))
+         (speed (if warp (/ (float tempo 1d0) (getf clip :bpm tempo)) shift)))
     (list (or (second row) 0) (or (third row) 0) start frames
-          (d-exp2 (/ (float (getf clip :transpose 0) 1d0) 12d0))
-          (db-gain (float (getf clip :gain 0) 1d0)))))
+          speed
+          (db-gain (float (getf clip :gain 0) 1d0))
+          (if (eq warp :stretch) shift speed))))
 
 (defun song-score (song)
   "The score array for SONG: its notes, session clips, automation and
@@ -300,7 +315,7 @@ audio regions, as the engine reads them (engine.lisp)."
                      (mapcar (lambda (event)
                                (destructuring-bind (beat length id velocity) event
                                  (let ((clip (find id clips :key (lambda (c) (getf c :id)))))
-                                   (push (clip-region clip samples layout *sample-rate*) regions)
+                                   (push (clip-region clip samples layout *sample-rate* (getf spec :tempo)) regions)
                                    (list beat length (1- (length regions)) velocity))))
                              events))
                    events))

@@ -492,7 +492,9 @@ async function keepAudio(audio) {
     if (channels === 2) data.set(right.subarray(from), frames);
     try {
       const name = await T.uploadSample(`${track.name} take ${takes}`, channels, data);
-      await T.send(form('add-audio-clip', track.name, name, kw('start'), +beat.toFixed(4), kw('offset'), +offset.toFixed(4)));
+      // played at the song's tempo, and in place of what it covers
+      await T.send(form('add-audio-clip', track.name, name, kw('start'), +beat.toFixed(4), kw('offset'), +offset.toFixed(4),
+                        kw('bpm'), song.tempo, kw('replace'), true));
     } catch (e) {
       status(`The take could not be kept: ${e.message}`);
     }

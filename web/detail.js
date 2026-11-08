@@ -257,7 +257,11 @@ function renderDetail() {
       field('Length', clip.length, 'length', 'How long the clip runs on the timeline, in beats.'),
       field('Start in sample', clip.offset, 'offset', 'Seconds into the sample where the clip begins.', 0.01),
       field('Gain', clip.gain, 'gain', 'This clip\'s level, in dB.', 0.5),
-      field('Transpose', clip.transpose, 'transpose', 'Semitones. Pitch and speed change together: down is slower and deeper.', 1));
+      field('Transpose', clip.transpose, 'transpose', clip.warp === 'stretch'
+        ? 'Semitones. A stretched clip keeps its timing; only the pitch moves.'
+        : clip.warp === 'repitch' ? 'A repitched clip\'s pitch follows the tempo; transpose has no effect.'
+          : 'Semitones. Pitch and speed change together: down is slower and deeper.', 1),
+      warpControl(track, clip));
     box.replaceChildren(bar, el('div', { id: 'detail-body' }));
     renderAudioClip(clip);
     return;
@@ -272,6 +276,28 @@ function renderDetail() {
   box.replaceChildren(bar, el('div', { id: 'detail-body' }));
   if (notes) renderRoll(track, clip);
   else renderDevices(track);
+}
+
+// Warp: whether an audio clip follows the song's tempo, and from what
+// tempo of its own.  x2 and /2 fix a guess that is out by an octave.
+function warpControl(track, clip) {
+  const set = (...args) => T.send(form('set-clip', track.name, clip.id, ...args));
+  const bpm = el('input', { type: 'number', step: 0.01, min: 20, max: 999, value: clip.bpm || T.song.tempo,
+                            disabled: !clip.warp, style: 'width:70px',
+                            onchange: (e) => set(kw('bpm'), +e.target.value) });
+  return el('span', { class: 'warp' },
+    el('label', { 'data-title': 'Warp',
+                  'data-doc': 'Stretch follows the song\'s tempo and keeps the pitch; Repitch follows it like a record sped up; Off plays the sound at its own speed.' },
+      'Warp',
+      el('select', { 'data-ctl': 'warp', onchange: (e) => set(kw('warp'), e.target.value === 'off' ? null : kw(e.target.value)) },
+        [['stretch', 'Stretch'], ['repitch', 'Repitch'], ['off', 'Off']].map(([value, label]) =>
+          el('option', { value, selected: (clip.warp || 'off') === value }, label)))),
+    el('label', { 'data-title': 'Clip BPM', 'data-doc': 'The tempo the sound was played at. The song\'s tempo over this is how much faster it plays.' },
+      'BPM', bpm),
+    el('button', { disabled: !clip.warp, 'data-title': 'Double', 'data-doc': 'Twice the clip\'s BPM: it plays half as fast.',
+                   onclick: () => set(kw('bpm'), +(clip.bpm * 2).toFixed(3)) }, '×2'),
+    el('button', { disabled: !clip.warp, 'data-title': 'Halve', 'data-doc': 'Half the clip\'s BPM: it plays twice as fast.',
+                   onclick: () => set(kw('bpm'), +(clip.bpm / 2).toFixed(3)) }, '÷2'));
 }
 
 // Repairs for a recording: each makes new sound for the sample, which
@@ -328,11 +354,9 @@ function renderAudioClip(clip) {
     sample ? ' — drag the bright part\'s edges to choose what the clip plays.' : '');
   body.replaceChildren(info, sample && !sample.missing ? repairRow(sample) : '', canvas);
   if (!sample || sample.missing || T.pool.length < sample.left + sample.frames) return;
-  const rate = Math.pow(2, clip.transpose / 12);
-  const secondsPerBeat = 60 / T.song.tempo;
   const x = (seconds) => seconds / sample.seconds * width;
   let from = clip.offset;
-  let to = Math.min(sample.seconds, clip.offset + clip.length * secondsPerBeat * rate);
+  let to = Math.min(sample.seconds, clip.offset + clip.length * clip.spb);
   const peaks = new Float32Array(width);
   for (let px = 0; px < width; px++) {
     const a = sample.left + Math.floor(px / width * sample.frames);
@@ -363,7 +387,7 @@ function renderAudioClip(clip) {
     if (!which) return;
     const from0 = from;
     const to0 = to;
-    const minimum = 0.0625 * secondsPerBeat * rate;
+    const minimum = 0.0625 * clip.spb;
     dragging(e, (dx) => {
       const seconds = dx / width * sample.seconds;
       if (which === 'from') from = Math.max(0, Math.min(to0 - minimum, from0 + seconds));
@@ -371,9 +395,9 @@ function renderAudioClip(clip) {
       draw();
     }, () => {
       if (which === 'from' && from !== from0) {
-        T.send(form('trim-clip-start', track.name, clip.id, (from - from0) / secondsPerBeat / rate));
+        T.send(form('trim-clip-start', track.name, clip.id, (from - from0) / clip.spb));
       } else if (which === 'to' && to !== to0) {
-        T.send(form('set-clip', track.name, clip.id, kw('length'), (to - from0) / secondsPerBeat / rate));
+        T.send(form('set-clip', track.name, clip.id, kw('length'), (to - from0) / clip.spb));
       }
     });
   });

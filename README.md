@@ -134,7 +134,8 @@ the other half.
 
 Recording into a session slot (takes go into the arrangement); takes
 stacked as comps; follow actions; tempo
-per scene; stretching audio to the tempo; samples on drum
+per scene; warp markers inside a clip (a clip follows the tempo as a
+whole); samples on drum
 pads; saved songs that carry their audio; tempo changes along the song;
 plugin hosting.
 

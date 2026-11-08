@@ -364,6 +364,105 @@ voice has phrases: (values octets channels)."
             (when stereo (setf (aref data (+ frames i)) (* 0.5f0 x)))))))
     (values (floats-octets data) (if stereo 2 1))))
 
+(defun hertz (left from to)
+  "The strongest frequency in LEFT between frames FROM and TO, to within
+12 Hz: the peak of the spectrum of the 4096 frames from FROM, which TO
+only bounds."
+  (let* ((n (min 4096 (- to from)))
+         (re (double-buffer 4096))
+         (im (double-buffer 4096)))
+    (dotimes (i n) (setf (aref re i) (aref left (+ from i))))
+    (fft! re im)
+    (* (loop with best = 0 with most = 0d0
+             for k from 1 below 2048
+             for power = (+ (expt (aref re k) 2) (expt (aref im k) 2))
+             do (when (> power most) (setf most power best k))
+             finally (return best))
+       (/ 48000d0 4096))))
+
+(defun test-warping ()
+  (flet ((first-clip (song) (first (getf (first (getf (the-object song spec) :tracks)) :clips))))
+    (check "a new audio clip is warped from the song's tempo, or the one its name gives"
+      (let ((song (song-with-sample)))
+        (let ((*song* song))
+          (import-sample! song "Break 90 BPM" (speech-like 1) 1))
+        (forms-pass? song "(add-audio-clip \"Speech\" \"Voice\") (add-audio-clip \"Speech\" \"Break 90 BPM\" :start 8)")
+        (destructuring-bind (a b) (getf (first (getf (the-object song spec) :tracks)) :clips)
+          (and (eq :stretch (getf a :warp)) (= 120 (getf a :bpm))
+               (= 90 (getf b :bpm)) (= 1.5 (getf b :length))))))
+    (check "at its own tempo a stretched clip plays the sample's own frames"
+      (let ((song (song-with-sample)))
+        (forms-pass? song "(add-audio-clip \"Speech\" \"Voice\" :start 2)")
+        (let ((left (render-song song (* 3 48000)))
+              (pool (pool-for (getf (the-object song spec) :samples))))
+          (< (abs (- (aref left (+ 48000 12000)) (float (aref pool 12000) 1d0))) 1d-4))))
+    (check "at twice the tempo a stretched clip takes half the time at the same pitch"
+      (let ((song (song-with-sample)))
+        (forms-pass? song "(add-audio-clip \"Speech\" \"Voice\" :start 0) (set-tempo 240)")
+        (let ((left (render-song song (* 2 48000))))
+          ;; the second burst, 0.9 to 1.2 s of the sample, now 0.45 to 0.6 s
+          ;; and the third, 1.6 to 1.9 s, now 0.8 to 0.95 s
+          (and (> (peak-of (subseq left 22000 28000)) 0.2d0)
+               (< (peak-of (subseq left 30500 37000)) 0.05d0)
+               (> (peak-of (subseq left 39000 45000)) 0.2d0)
+               (< (abs (- 220 (hertz left 22500 28500))) 12)))))
+    (check "repitched, it is twice as fast and an octave up"
+      (let ((song (song-with-sample)))
+        (forms-pass? song "(add-audio-clip \"Speech\" \"Voice\" :start 0 :warp :repitch) (set-tempo 240)")
+        (let ((left (render-song song (* 2 48000))))
+          (and (> (peak-of (subseq left 22000 28000)) 0.2d0)
+               (< (abs (- 440 (hertz left 22500 28500))) 12)))))
+    (check "a stretched clip transposed keeps its timing and moves its pitch"
+      (let ((song (song-with-sample)))
+        (forms-pass? song "(add-audio-clip \"Speech\" \"Voice\" :start 0 :transpose 12)")
+        (let ((left (render-song song (* 2 48000))))
+          (and (= 4 (getf (first-clip song) :length))
+               (< (peak-of (subseq left 0 4000)) 1d-6)
+               (< (abs (- 440 (hertz left 9000 22000))) 12)))))
+    (check "unwarped, a clip ignores the tempo"
+      (let ((song (song-with-sample)))
+        (forms-pass? song "(add-audio-clip \"Speech\" \"Voice\" :start 0 :warp nil) (set-tempo 240)")
+        (let ((left (render-song song (* 2 48000))))
+          ;; the second burst stays at 0.9 to 1.2 s
+          (and (< (peak-of (subseq left 30500 42000)) 1d-6)
+               (> (peak-of (subseq left 44000 56000)) 0.2d0)))))
+    (check "fit-clip makes a sample take the bars it is given"
+      (let ((song (song-with-sample)))
+        (forms-pass? song "(add-audio-clip \"Speech\" \"Voice\" :start 0 :warp nil) (fit-clip \"Speech\" \"Voice\" 2)")
+        (let ((c (first-clip song)))
+          (and (eq :stretch (getf c :warp)) (= 240 (getf c :bpm)) (= 8 (getf c :length))))))
+    (check "warping and the tempo are data: the plan and program stay"
+      (let* ((song (song-with-sample))
+             (plan (progn (forms-pass? song "(add-audio-clip \"Speech\" \"Voice\")")
+                          (render-song song 480)
+                          (the-object song plan)))
+             (builds (copy-list *builds*)))
+        (forms-pass? song "(set-tempo 133) (set-clip \"Speech\" \"Voice\" :warp :repitch :bpm 100)")
+        (render-song song 480)
+        (and (equal plan (the-object song plan)) (equal builds *builds*))))
+    (check "a take replaces what it covers: clips inside go, across an edge are cut, across both split"
+      (let ((song (song-with-sample)))
+        (forms-pass? song "(add-audio-clip \"Speech\" \"Voice\" :start 0 :name \"A\")
+                           (add-audio-clip \"Speech\" \"Voice\" :start 6 :length 1 :name \"B\")
+                           (add-audio-clip \"Speech\" \"Voice\" :start 8 :name \"C\")
+                           (add-audio-clip \"Speech\" \"Voice\" :start 2 :length 7 :replace t :name \"Take\")")
+        (let ((clips (mapcar (lambda (c) (list (getf c :name) (getf c :start) (getf c :length) (getf c :offset)))
+                             (getf (first (getf (the-object song spec) :tracks)) :clips))))
+          (and (equal (assoc "A" clips :test #'equal) '("A" 0 2 0))
+               (null (assoc "B" clips :test #'equal))
+               (equal (assoc "C" clips :test #'equal) '("C" 9.0d0 3.0d0 0.5d0))
+               (assoc "Take" clips :test #'equal)))))
+    (check "a take inside a clip splits it, the far part going on where it was"
+      (let ((song (song-with-sample)))
+        (forms-pass? song "(add-audio-clip \"Speech\" \"Voice\" :start 0 :name \"A\")
+                           (add-audio-clip \"Speech\" \"Voice\" :start 1 :length 1 :replace t :name \"Take\")")
+        (let ((parts (remove "Take" (getf (first (getf (the-object song spec) :tracks)) :clips)
+                             :key (lambda (c) (getf c :name)) :test #'equal)))
+          (and (= 2 (length parts))
+               (equal (mapcar (lambda (c) (list (getf c :start) (getf c :length) (getf c :offset))) parts)
+                      '((0 1 0) (2.0d0 2.0d0 1.0d0)))
+               (/= (getf (first parts) :id) (getf (second parts) :id))))))))
+
 (defun song-with-sample (&optional stereo)
   (let ((song (make-song)))
     (multiple-value-bind (octets channels) (speech-like 2 stereo)
@@ -430,7 +529,7 @@ voice has phrases: (values octets channels)."
           (> (peak-of (subseq left 1000 12000)) 0.3d0))))
     (check "transposing an octave down plays it at half speed"
       (let ((song (song-with-sample)))
-        (forms-pass? song "(add-audio-clip \"Speech\" \"Voice\" :start 0 :transpose -12)")
+        (forms-pass? song "(add-audio-clip \"Speech\" \"Voice\" :start 0 :transpose -12 :warp nil)")
         (and (= 8 (getf (first (getf (first (getf (the-object song spec) :tracks)) :clips)) :length))
              (let ((left (render-song song (* 2 48000))))
                ;; the first burst, 0.1 to 0.5 s of the sample, now 0.2 to 1 s
@@ -1017,6 +1116,7 @@ change: (record-golden).")
   (test-session)
   (test-sharing)
   (test-trimming)
+  (test-warping)
   (test-repair)
   (test-recording)
   (test-agent-survives-reload)
