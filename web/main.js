@@ -307,11 +307,36 @@ T.sampleTest = async function sampleTest() {
   await new Promise((r) => setTimeout(r, 700));
   checks.plays = T.peaks && Math.max(...T.peaks) > 0.01;
   T.stop();
-  T.clipId = track.clips[0].id;
+  // the front of a clip cut off by its left edge, as a mouse drags it
+  T.setView('arrangement');
+  const drag = async (target, x0, y0, dx) => {
+    const at = (x) => ({ clientX: x, clientY: y0, bubbles: true, pointerId: 1 });
+    target.dispatchEvent(new PointerEvent('pointerdown', at(x0)));
+    window.dispatchEvent(new PointerEvent('pointermove', at(x0 + dx)));
+    window.dispatchEvent(new PointerEvent('pointerup', at(x0 + dx)));
+    await chain;
+  };
+  const first = T.song.tracks.find((t) => t.id === track.id).clips.find((c) => c.scene === null && c.start === 0);
+  const edge = document.querySelector(`[data-ctl="clip:${first.id}"] .clip-edge.left`);
+  const box = edge.getBoundingClientRect();
+  await drag(edge, box.left + 2, box.top + 5, T.ppb * 0.5);
+  const trimmed = T.song.tracks.find((t) => t.id === track.id).clips.find((c) => c.id === first.id);
+  checks.leftEdgeTrims = trimmed.start === 0.5 && trimmed.length === first.length - 0.5 && trimmed.offset === 0.25;
+  // and the end of what it plays, by the waveform's right handle
+  T.clipId = first.id;
   T.trackId = track.id;
   T.detail = 'notes';
   renderDetail();
-  checks.clipView = Boolean($('#detail-body canvas'));
+  const view = $('#detail-body canvas');
+  checks.clipView = Boolean(view);
+  const vbox = view.getBoundingClientRect();
+  const sampleSeconds = T.song.samples[0].seconds;
+  const toX = vbox.left + (0.25 + trimmed.length * 0.5) / sampleSeconds * view.width;
+  await drag(view, toX, vbox.top + 20, -view.width * 0.25 / sampleSeconds);
+  const shortened = T.song.tracks.find((t) => t.id === track.id).clips.find((c) => c.id === first.id);
+  checks.waveformHandleTrims = Math.abs(shortened.length - (trimmed.length - 0.5)) < 0.02;
+  const after = await T.selfTest(48000 * 4);
+  checks.parityAfterTrims = after.ok;
   checks.listed = Boolean(document.querySelector('[data-ctl="sample:Test voice"]'));
   const info = await T.send(form('sample-info', 'Test voice'));
   checks.phrases = /:phrases \(\(.*\) \(.*\) \(.*\)\)/.test(info.results[0].value);

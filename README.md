@@ -78,7 +78,9 @@ how a performance is held to the same frames on both sides.
 prompt's model can edit at once, so an undo entry records the edit, the
 song before and after it, and undoing it is a three-way merge that takes
 back that edit's own changes and leaves everything done since.  A prompt
-is one entry of its own edits only.
+is one entry of its own edits only.  Versions share whatever they have
+in common, so an entry costs only the path to what it changed, and two
+hundred of them cost about one song.
 
 **One door.**  The page drives the song by sending forms of the Lisp API
 (`source/api.lisp`, `docs/api.md`), so nothing can be done with the

@@ -637,6 +637,47 @@ On an audio clip, :offset (seconds into the sample), :gain and :transpose."
                   (list :clip (getf c :id) :start (getf c :start) :length (getf c :length)
                         :loop (getf c :loop))))))
 
+(define-op trim-clip-start (track clip beats)
+  "Move a clip's start BEATS later (or earlier, when negative) and keep
+its end and everything it plays where they were: an audio clip begins
+further into its sample, a clip's notes stay at the same places in the
+song.  How the front of a clip is cut off."
+  (edit-song! (song)
+              (lambda (spec)
+                (let* ((c (find-clip (find-track spec track) clip))
+                       (start (getf c :start))
+                       (length (getf c :length))
+                       (rate (expt 2d0 (/ (getf c :transpose 0) 12d0)))
+                       (seconds-per-beat (/ 60d0 (getf spec :tempo)))
+                       ;; no further than a sixteenth before the end, no
+                       ;; earlier than the song's start or the sample's
+                       (most (- length 0.0625d0))
+                       (least (max (- start)
+                                   (if (getf c :sample)
+                                       (- (/ (getf c :offset 0) seconds-per-beat rate))
+                                       most-negative-double-float)))
+                       (d (float (max least (min most beats)) 1d0))
+                       (snap (lambda (x) (/ (round (* x 1000000)) 1000000d0))))
+                  (unless (realp beats)
+                    (error "Trim by a number of beats, not ~s." beats))
+                  (put! c :start (funcall snap (+ start d)))
+                  (put! c :length (funcall snap (- length d)))
+                  (if (getf c :sample)
+                      (put! c :offset (funcall snap (max 0 (+ (getf c :offset 0) (* d seconds-per-beat rate)))))
+                      (let ((repeat (getf c :loop)))
+                        (put! c :notes
+                              (if (and repeat (< repeat length))
+                                  ;; a looping pattern turns, so the same note
+                                  ;; falls on the same beat of the song
+                                  (mapcar (lambda (n) (list* (first n) (funcall snap (mod (- (second n) d) repeat)) (cddr n)))
+                                          (getf c :notes))
+                                  (loop for n in (getf c :notes)
+                                        for at = (- (second n) d)
+                                        when (>= at 0)
+                                          collect (list* (first n) (funcall snap at) (cddr n)))))))
+                  (list :clip (getf c :id) :start (getf c :start) :length (getf c :length)
+                        :offset (getf c :offset))))))
+
 (define-op duplicate-clip (track clip start)
   "A copy of a clip at beat START."
   (edit-song! (song)

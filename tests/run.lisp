@@ -637,6 +637,81 @@ the page, runs PERSON-FORMS between the model's two rounds."
     (check "and the prompt is still one undo"
       (equal (tracks-of song) '("A")))))
 
+(defun conses-reachable (roots)
+  "How many distinct conses ROOTS hold between them."
+  (let ((seen (make-hash-table :test 'eq)) (stack (copy-list roots)))
+    (loop while stack
+          do (let ((x (pop stack)))
+               (when (and (consp x) (not (gethash x seen)))
+                 (setf (gethash x seen) t)
+                 (push (car x) stack)
+                 (push (cdr x) stack))))
+    (hash-table-count seen)))
+
+(defun test-sharing ()
+  (let ((song (make-song)))
+    (forms-pass? song "(add-track \"A\") (add-track \"B\") (add-clip \"B\" :length 64)")
+    ;; a long clip: a thousand notes
+    (let ((*song* song))
+      (with-double-floats
+        (tala-api::set-notes "B" nil (loop for i below 1000 collect (list (+ 40 (mod i 24)) (* i 0.0625d0) 0.05d0)))))
+    (let ((before (the-object song spec)))
+      (forms-pass? song "(set-track \"A\" :gain -3)")
+      (let ((after (the-object song spec)))
+        (check "an edit shares what it did not change"
+          (eq (getf (find "B" (getf after :tracks) :key (lambda (x) (getf x :name)) :test #'string=) :clips)
+              (getf (find "B" (getf before :tracks) :key (lambda (x) (getf x :name)) :test #'string=) :clips)))
+        (check "and changes what it did"
+          (= -3 (getf (first (getf after :tracks)) :gain)))))
+    (check "two hundred edits of a long song cost the path to each change, not a song each"
+      (let ((one (conses-reachable (list (the-object song spec)))))
+        (dotimes (i 200)
+          (forms-pass? song (format nil "(set-track \"A\" :gain ~d)" (- (mod i 20)))))
+        (let ((all (conses-reachable (list (the-object song spec) (the-object song undo-entries)))))
+          ;; copies would be two hundred songs; the path from the root to
+          ;; one track's gain is under a hundred conses
+          (or (< all (+ one (* 200 100)))
+              (format nil "one song ~d conses, with its undo list ~d" one all)))))
+    (check "a deleted track does not stop the ones after it being shared"
+      (let ((before (the-object song spec)))
+        (forms-pass? song "(delete-track \"A\")")
+        (eq (first (getf (the-object song spec) :tracks)) (second (getf before :tracks)))))
+    (check "undo still comes back to an equal song"
+      (let ((before (copy-tree (the-object song spec))))
+        (forms-pass? song "(add-track \"C\") (set-tempo 99) (undo) (undo)")
+        (equal before (the-object song spec))))))
+
+(defun test-trimming ()
+  (let ((song (song-with-sample)))
+    (forms-pass? song "(add-audio-clip \"Speech\" \"Voice\" :start 2)")
+    (forms-pass? song "(trim-clip-start \"Speech\" \"Voice\" 1)")
+    (let ((clip (first (getf (first (getf (the-object song spec) :tracks)) :clips))))
+      (check "trimming an audio clip's front moves its start into the sample, its end staying"
+        (and (= 3 (getf clip :start)) (= 3 (getf clip :length)) (= 0.5d0 (getf clip :offset)))))
+    (check "and what it plays stays where it was in the song"
+      (let ((left (render-song song (* 3 48000))))
+        ;; the second burst, 0.9 s into the sample, still at 1.9 s of the song
+        (and (< (peak-of (subseq left 0 (* 3/2 48000))) 1d-6)
+             (> (peak-of (subseq left (round (* 1.95 48000)) (round (* 2.15 48000)))) 0.3d0))))
+    (check "the front cannot be brought back past the sample's start"
+      (progn
+        (forms-pass? song "(trim-clip-start \"Speech\" \"Voice\" -5)")
+        (let ((clip (first (getf (first (getf (the-object song spec) :tracks)) :clips))))
+          (and (= 2 (getf clip :start)) (= 0 (getf clip :offset)) (= 4 (getf clip :length)))))))
+  (let ((song (make-song)))
+    (forms-pass? song "(add-track \"A\") (add-clip \"A\" :start 0 :length 4 :notes ((60 0 0.5) (62 1 0.5) (64 3 0.5)))
+(trim-clip-start \"A\" nil 2)")
+    (check "trimming a clip of notes keeps the notes after the cut where they were"
+      (equal (the-object (the-object song (tracks 0)) events) '((3.0d0 0.5 64 100)))))
+  (let ((song (make-song)))
+    (forms-pass? song "(add-track \"A\") (add-clip \"A\" :start 0 :length 8 :loop 2 :notes ((60 0 0.25) (62 1 0.25)))")
+    (let ((before (mapcar #'first (the-object (the-object song (tracks 0)) events))))
+      (forms-pass? song "(trim-clip-start \"A\" nil 1)")
+      (check "and a looping clip's pattern turns, so every note stays on its beat"
+        (let ((after (mapcar #'first (the-object (the-object song (tracks 0)) events)))
+              (kept (remove-if (lambda (b) (< b 1)) before)))
+          (and (= (length after) (length kept)) (every #'= after kept)))))))
+
 (defun test-agent-survives-reload ()
   (check "a reload keeps where the agent was pointed"
     (let ((saved (sexp-agent:agent-messages-url *agent*)))
@@ -790,6 +865,8 @@ change: (record-golden).")
   (test-hearing)
   (test-samples)
   (test-session)
+  (test-sharing)
+  (test-trimming)
   (test-agent-survives-reload)
   (test-json)
   (test-reference)

@@ -126,6 +126,8 @@ a { color: inherit; text-decoration: none; }
 .clip-title { position: absolute; left: 4px; top: 0; font-size: 11px; font-weight: 600; white-space: nowrap; }
 .clip canvas { position: absolute; left: 0; top: 13px; }
 .clip-edge { position: absolute; right: 0; top: 0; bottom: 0; width: 7px; cursor: ew-resize; }
+.clip-edge.left { left: 0; right: auto; }
+.clip-edge:hover { background: rgba(255,255,255,.35); }
 .playhead { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--text); z-index: 4; pointer-events: none; }
 .auto-row { height: 76px; }
 .auto-row .track-head { grid-template-columns: 1fr; grid-template-rows: auto; padding: 4px 6px; }

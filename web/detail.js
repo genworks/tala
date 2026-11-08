@@ -242,17 +242,76 @@ function renderDetail() {
   else renderDevices(track);
 }
 
-// An audio clip's sound, large.
+// An audio clip's whole sample, the part the clip plays lit, with a
+// handle at each end of it: the left one cuts or brings back the front,
+// the right one the end.
 function renderAudioClip(clip) {
   const body = $('#detail-body');
+  const track = selectedTrack();
   const sample = T.song.samples.find((s) => s.id === clip.sample);
-  const canvas = el('canvas', { width: Math.max(300, body.clientWidth - 16), height: Math.max(90, body.clientHeight - 58) });
-  drawWaveform(canvas, clip, '#38c3b4');
-  body.replaceChildren(el('div', { class: 'hint' },
+  const width = Math.max(300, body.clientWidth - 16);
+  const height = Math.max(90, body.clientHeight - 58);
+  const canvas = el('canvas', { width, height, class: 'sample-view' });
+  const info = el('div', { class: 'hint' },
     sample ? `${sample.name}: ${sample.seconds.toFixed(2)} s, ${sample.channels === 2 ? 'stereo' : 'mono'}` : 'The sample is gone.',
     sample && sample.missing ? ' — its audio is not on this server; import it again.' : '',
-    sample && sample.words ? ` — "${sample.words}"` : ''),
-  canvas);
+    sample && sample.words ? ` — "${sample.words}"` : '',
+    sample ? ' — drag the bright part\'s edges to choose what the clip plays.' : '');
+  body.replaceChildren(info, canvas);
+  if (!sample || sample.missing || T.pool.length < sample.left + sample.frames) return;
+  const rate = Math.pow(2, clip.transpose / 12);
+  const secondsPerBeat = 60 / T.song.tempo;
+  const x = (seconds) => seconds / sample.seconds * width;
+  let from = clip.offset;
+  let to = Math.min(sample.seconds, clip.offset + clip.length * secondsPerBeat * rate);
+  const peaks = new Float32Array(width);
+  for (let px = 0; px < width; px++) {
+    const a = sample.left + Math.floor(px / width * sample.frames);
+    const b = sample.left + Math.floor((px + 1) / width * sample.frames);
+    let peak = 0;
+    for (let i = a; i < b; i++) peak = Math.max(peak, Math.abs(T.pool[i]));
+    peaks[px] = peak;
+  }
+  const draw = () => {
+    const g = canvas.getContext('2d');
+    g.clearRect(0, 0, width, height);
+    const middle = height / 2;
+    for (let px = 0; px < width; px++) {
+      const inside = px >= x(from) && px <= x(to);
+      g.fillStyle = inside ? '#38c3b4' : '#3a3e4a';
+      const h = Math.min(1, peaks[px]) * middle;
+      g.fillRect(px, middle - h, 1, Math.max(1, h * 2));
+    }
+    g.fillStyle = '#f0a63c';
+    g.fillRect(x(from) - 1, 0, 3, height);
+    g.fillRect(x(to) - 1, 0, 3, height);
+  };
+  draw();
+  canvas.addEventListener('pointerdown', (e) => {
+    const box = canvas.getBoundingClientRect();
+    const px = e.clientX - box.left;
+    const which = Math.abs(px - x(from)) < 10 ? 'from' : Math.abs(px - x(to)) < 10 ? 'to' : null;
+    if (!which) return;
+    const from0 = from;
+    const to0 = to;
+    const minimum = 0.0625 * secondsPerBeat * rate;
+    dragging(e, (dx) => {
+      const seconds = dx / width * sample.seconds;
+      if (which === 'from') from = Math.max(0, Math.min(to0 - minimum, from0 + seconds));
+      else to = Math.max(from0 + minimum, Math.min(sample.seconds, to0 + seconds));
+      draw();
+    }, () => {
+      if (which === 'from' && from !== from0) {
+        T.send(form('trim-clip-start', track.name, clip.id, (from - from0) / secondsPerBeat / rate));
+      } else if (which === 'to' && to !== to0) {
+        T.send(form('set-clip', track.name, clip.id, kw('length'), (to - from0) / secondsPerBeat / rate));
+      }
+    });
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    const px = e.clientX - canvas.getBoundingClientRect().left;
+    canvas.style.cursor = Math.abs(px - x(from)) < 10 || Math.abs(px - x(to)) < 10 ? 'ew-resize' : 'default';
+  });
 }
 
 // The piano roll.

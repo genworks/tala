@@ -101,13 +101,28 @@ function clipElement(track, clip) {
       renderAll();
     },
   }, el('span', { class: 'clip-title' }, clip.name), canvas,
-  el('div', { class: 'clip-edge', onpointerdown: (e) => {
+  el('div', { class: 'clip-edge left', 'data-title': 'Clip start',
+              'data-doc': 'Drag to cut off or bring back the front of the clip; what it plays stays where it was.',
+              onpointerdown: (e) => {
+    selectClip(track, clip);
+    dragging(e, (dx) => {
+      const d = trimBeats(clip, dx);
+      node.style.left = `${(clip.start + d) * T.ppb}px`;
+      node.style.width = `${(clip.length - d) * T.ppb}px`;
+    }, (dx) => {
+      const d = trimBeats(clip, dx);
+      if (d) T.send(form('trim-clip-start', track.name, clip.id, d));
+    });
+  } }),
+  el('div', { class: 'clip-edge', 'data-title': 'Clip end', 'data-doc': 'Drag to make the clip longer or shorter.',
+              onpointerdown: (e) => {
     selectClip(track, clip);
     const start = clip.length;
+    const step = clip.sample ? 0.0625 : 0.25;
     dragging(e, (dx) => {
-      node.style.width = `${Math.max(0.25, snap(start + dx / T.ppb, 0.25)) * T.ppb}px`;
+      node.style.width = `${Math.max(step, snap(start + dx / T.ppb, step)) * T.ppb}px`;
     }, (dx) => {
-      const length = Math.max(0.25, snap(start + dx / T.ppb, 0.25));
+      const length = Math.max(step, snap(start + dx / T.ppb, step));
       if (length !== clip.length) T.send(form('set-clip', track.name, clip.id, kw('length'), length));
     });
   } }));
@@ -122,6 +137,20 @@ function clipElement(track, clip) {
     });
   });
   return node;
+}
+
+// How far a drag of DX pixels moves a clip's start: on the grid, a
+// sixteenth for audio and a quarter beat for notes, and never past the
+// clip's end, the song's start or the front of its sample.
+function trimBeats(clip, dx) {
+  const step = clip.sample ? 0.0625 : 0.25;
+  const wanted = Math.round(dx / T.ppb / step) * step;
+  let least = -clip.start;
+  if (clip.sample) {
+    const rate = Math.pow(2, clip.transpose / 12);
+    least = Math.max(least, -clip.offset / (60 / T.song.tempo) / rate);
+  }
+  return Math.max(least, Math.min(clip.length - step, wanted));
 }
 
 function selectClip(track, clip) {

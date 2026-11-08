@@ -389,12 +389,56 @@ audio regions, as the engine reads them (engine.lisp)."
   "While a prompt runs, a cons whose car collects its edits, newest
 first: the prompt's ending makes them one undo.")
 
+;;; Versions share what they have in common.  An edit works on a private
+;;; copy, and then every part of the copy equal to the old version is
+;;; replaced by the old version's own: a version costs only what changed,
+;;; so two hundred undo entries of a long song cost about one song, and
+;;; the merge finds the unchanged parts by EQ at once.  It is safe because
+;;; no version is changed once it is set: every edit copies first.
+
+(defun share (new old)
+  "NEW with each part equal to its counterpart in OLD replaced by that
+counterpart: (values result same?), SAME? when all of NEW was OLD's.
+Lists of things with ids are matched by id, so a thing deleted or added
+before others does not stop them being shared."
+  (cond ((eq new old) (values old t))
+        ((and (consp new) (consp old))
+         (if (and (id-list? new) (id-list? old))
+             (let ((same (= (length new) (length old)))
+                   (out '()))
+               (loop for thing in new
+                     for twin = (find (getf thing :id) old :key (lambda (e) (getf e :id)))
+                     do (multiple-value-bind (part part-same) (if twin (share thing twin) (values thing nil))
+                          (unless (and part-same (eq twin (nth (length out) old)))
+                            (setf same nil))
+                          (push part out)))
+               (if same (values old t) (values (nreverse out) nil)))
+             ;; element by element down the list, the tail kept when it is
+             ;; the old one's
+             (let ((same t) (out '()) (a new) (b old))
+               (loop while (and (consp a) (consp b))
+                     do (multiple-value-bind (part part-same) (share (car a) (car b))
+                          (unless part-same (setf same nil))
+                          (push part out))
+                        (setf a (cdr a) b (cdr b)))
+               (multiple-value-bind (tail tail-same) (if (or (consp a) (consp b))
+                                                         (values a nil)
+                                                         (share a b))
+                 (if (and same tail-same)
+                     (values old t)
+                     (let ((result tail))
+                       (dolist (part out result)
+                         (push part result))))))))
+        ((and (not (consp new)) (not (consp old)) (equal new old)) (values old t))
+        (t (values new nil))))
+
 (defun edit-song! (song change)
   "CHANGE, a function of a private copy of the spec, applied: what it
 returned.  An error leaves the song as it was."
   (let* ((old (the-object song spec))
-         (new (copy-tree old))
-         (result (funcall change new)))
+         (copy (copy-tree old))
+         (result (funcall change copy))
+         (new (share copy old)))
     (if *journal*
         (push (list :edit old new) (car *journal*))
         (push-undo! song (list :edit old new)))

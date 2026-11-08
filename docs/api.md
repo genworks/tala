@@ -132,6 +132,11 @@ look for:
   clip's id.  `:notes` as below.
 - `(delete-clip track clip)`, `(duplicate-clip track clip start)`.
 - `(set-clip track clip &key name start length loop)`.
+- `(trim-clip-start track clip beats)` — cut off the front of a clip:
+  its start moves `beats` later (earlier when negative) and its end and
+  everything it plays stay where they were.  An audio clip then begins
+  further into its sample; to cut a word off the front of a phrase, this
+  is the operation.
 - `(add-notes track clip notes)` — each note `(pitch start length)` or
   `(pitch start length velocity)`, times in beats from the clip's
   start.
