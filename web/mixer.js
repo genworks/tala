@@ -59,14 +59,15 @@ function renderMixer() {
 T.setView = function setView(view) {
   T.view = view;
   $('#arrangement').hidden = view !== 'arrangement';
+  $('#session').hidden = view !== 'session';
   $('#mixer').hidden = view !== 'mixer';
   renderTabs();
 };
 
 function renderTabs() {
   $('#view-tabs').replaceChildren(
-    ...[['arrangement', 'Arrangement'], ['mixer', 'Mixer']].map(([key, label]) =>
+    ...[['arrangement', 'Arrangement'], ['session', 'Session'], ['mixer', 'Mixer']].map(([key, label]) =>
       el('button', { class: T.view === key ? 'on' : '', 'data-ctl': `view:${key}`,
-                     'data-title': label, 'data-doc': 'Tab switches between the arrangement and the mixer.',
+                     'data-title': label, 'data-doc': 'Tab switches between the arrangement and the session.',
                      onclick: () => T.setView(key) }, label)));
 }

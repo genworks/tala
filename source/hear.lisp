@@ -208,7 +208,18 @@ line at each frame of BARS-AT and at 100 Hz, 1 kHz and 10 kHz."
 (defun song-beats-per-bar (spec)
   (* (getf spec :numerator) (/ 4 (getf spec :denominator))))
 
-(defun hear-song (song &key (from 1) (bars 8) track (sr 48000))
+(defun scene-script (spec row)
+  "What launching scene ROW at the first frame is, track by track: a
+slot's clip, or a stop for an empty one."
+  (loop for track in (getf spec :tracks)
+        for i from 0
+        collect (list 0 :launch i
+                      (if (find (getf (nth row (getf spec :scenes)) :id) (getf track :clips)
+                                :key (lambda (c) (getf c :scene)))
+                          row
+                          -1))))
+
+(defun hear-song (song &key (from 1) (bars 8) track scene (sr 48000))
   "A picture of BARS bars of SONG from bar FROM (the first bar is 1):
 the song, or TRACK's spec-less name alone.  The sound the page plays,
 rendered here."
@@ -221,7 +232,9 @@ rendered here."
          (frames (* bars frames-per-bar))
          (from-beat (* (1- from) per-bar))
          (listened (if track (make-song (solo-spec spec track)) song)))
-    (multiple-value-bind (left right) (render-song listened frames :sr sr :from from-beat)
+    (multiple-value-bind (left right)
+        (render-song listened frames :sr sr :from from-beat
+                                     :script (and scene (scene-script spec scene)))
       (multiple-value-bind (peak rms per-bar-db correlation clipped)
           (level-measures left right frames-per-bar)
         (let* ((width *picture-width*)
@@ -231,13 +244,14 @@ rendered here."
                                      width height)))
           (make-picture
            (png-octets rgb width height)
-           (format nil "A spectrogram of ~:[the whole song~;~:*track ~a alone~], bars ~d to ~d at ~a BPM.  ~
+           (format nil "A spectrogram of ~@[scene ~s of the session, ~]~:[the whole song~;~:*track ~a alone~], bars ~d to ~d at ~a BPM.  ~
 Left to right is time, ~,1f pixels a bar, with a faint line at the start of each bar.  ~
 Bottom to top is frequency on a logarithmic scale, ~d Hz to ~d Hz, with faint lines at 100 Hz, 1 kHz and 10 kHz.  ~
 Brighter is louder: black is under -60 dB, violet quiet, orange strong, white at full level.  ~
 Peak ~a dB, RMS ~a dB~:[~*~;, ~d frames at or over full scale (clipping)~], stereo correlation ~,2f (1 mono, 0 wide, negative out of phase).  ~
 RMS by bar, dB: ~{~a~^ ~}.  ~
 Bands, dB below the strongest: ~{~a~^, ~}."
+                   (and scene (getf (nth scene (getf spec :scenes)) :name))
                    track from (+ from bars -1) tempo
                    (/ width (float bars)) (round *lowest-hz*) (round *highest-hz*)
                    (db-of peak) (db-of rms) (plusp clipped) clipped correlation

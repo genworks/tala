@@ -71,7 +71,7 @@ a { color: inherit; text-decoration: none; }
 #info p { margin: 4px 0 0; }
 
 #center { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-#arrangement, #mixer { flex: 1 1 58%; min-height: 0; overflow: auto; position: relative; background: var(--bg); }
+#arrangement, #mixer, #session { flex: 1 1 58%; min-height: 0; overflow: auto; position: relative; background: var(--bg); }
 #detail {
   flex: 0 0 auto; height: 41%; min-height: 200px; border-top: 2px solid var(--line);
   background: var(--panel); display: flex; flex-direction: column; min-width: 0;
@@ -134,6 +134,39 @@ a { color: inherit; text-decoration: none; }
 .auto-lane svg { position: absolute; inset: 0; }
 .add-row { padding: 6px; position: sticky; left: 0; width: var(--head-width); }
 .empty-note { padding: 24px; color: var(--dim); position: sticky; left: 0; max-width: 560px; }
+
+/* The session. */
+#session { padding: 8px; }
+.session-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; color: var(--dim); }
+.grid { display: grid; gap: 3px; width: max-content; }
+.grid-head {
+  font-weight: 600; padding: 4px 6px; border-top: 3px solid; background: var(--panel);
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: pointer;
+}
+.grid-head.selected { background: var(--panel2); }
+.scenes-head { border-color: var(--line); color: var(--dim); }
+.slot {
+  position: relative; height: 30px; border-radius: 3px; display: flex; align-items: center; gap: 5px;
+  padding: 0 4px; overflow: hidden; cursor: pointer; color: #101113;
+}
+.slot.empty { background: #1d1e23; border: 1px solid #26282f; }
+.slot.empty .launch { opacity: .35; color: var(--text); }
+.slot.empty:hover .launch { opacity: 1; }
+.slot.selected { outline: 2px solid var(--text); outline-offset: -1px; }
+.slot .launch, .scene-cell .launch {
+  background: none; border: none; padding: 0 3px; font-size: 13px; color: inherit; line-height: 1;
+}
+.slot-name { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.slot .progress { position: absolute; left: 0; bottom: 0; height: 3px; width: 0; background: #101113; }
+.slot.playing { box-shadow: inset 0 0 0 2px #dfffe0; }
+.slot.playing .launch { color: #0b3d10; }
+.slot.queued { animation: waiting .5s steps(1) infinite; }
+@keyframes waiting { 50% { filter: brightness(1.6); } }
+.scene-cell { display: flex; align-items: center; gap: 4px; background: var(--panel); border-radius: 3px; padding: 0 4px; }
+.scene-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.stop-cell button { width: 100%; }
+#back-to-arrangement { background: var(--danger); border-color: var(--danger); color: #fff; }
+.lane.in-session { opacity: .35; }
 
 /* The mixer. */
 #mixer { display: flex; gap: 2px; padding: 8px; align-items: stretch; }

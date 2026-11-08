@@ -258,6 +258,8 @@ async function syncEngine() {
 function heardFromEngine(message) {
   if (T.playing) T.beat = message.beat;
   T.peaks = message.peaks;
+  T.clock = message.clock;
+  T.sessionState = message.session;
 }
 
 T.play = async function play(from = T.startBeat) {
@@ -331,6 +333,10 @@ function renderTransport() {
                    'data-doc': 'Repeat the stretch under the bracket in the ruler. L does the same.',
                    onclick: () => T.send(form('set-loop', song.loopStart, song.loopEnd, kw('on'), !song.loopOn)) }, 'Loop'),
     el('span', { class: 'readout', id: 'position' }, '1.1.1'),
+    el('button', { id: 'back-to-arrangement', hidden: true, 'data-ctl': 'back-to-arrangement',
+                   'data-title': 'Back to Arrangement',
+                   'data-doc': 'Tracks playing session clips go back to the timeline, from where the song is now.',
+                   onclick: () => T.backToArrangement() }, '↩ Arrangement'),
     el('input', { id: 'tempo', type: 'number', min: 20, max: 300, step: 0.1, value: song.tempo,
                   'data-ctl': 'tempo', 'data-title': 'Tempo', 'data-doc': 'Beats a minute.',
                   onchange: (e) => T.send(form('set-tempo', +e.target.value)) }),

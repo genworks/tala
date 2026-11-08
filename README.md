@@ -4,8 +4,8 @@ A digital audio workstation in Common Lisp and the browser, with a
 prompt tile from the first commit.  A *tala* is a rhythmic cycle.
 
 Tracks, clips, a piano roll, automation, device chains, returns,
-sidechain ducking, imported audio and a mixer, laid out as anyone who
-has used a modern DAW will expect.  In the prompt tile a language model works the same
+sidechain ducking, imported audio, a clip-launch grid of scenes and a
+mixer, laid out as anyone who has used a modern DAW will expect.  In the prompt tile a language model works the same
 controls: ask for a style, a sound or an explanation, and it reads what
 each control does, sets them, checks the result and points at what it
 talked about.  There are no presets.  A sound is a set of values, and
@@ -24,7 +24,7 @@ then browse `/tala/` on that image's HTTP port.  The audio engine is an
 AudioWorklet, which browsers offer only in a secure context, so use
 `localhost` or `https`.
 
-Space plays, Tab switches between the arrangement and the mixer, M turns
+Space plays, Tab switches between the arrangement and the session, M turns
 the computer's keys into a keyboard, and a MIDI keyboard is picked up if
 the browser offers one.  Double-click a lane for a clip and a clip for
 its notes.  Drop an audio file on a track, or use Import audio, for
@@ -65,6 +65,14 @@ reads, and a clip is a row of the score, so importing, moving or
 retuning audio rebuilds nothing and the two runtimes still agree to the
 last bit.  A song names its samples, so its file stays small and does
 not carry the audio.
+
+**The session keeps its own time.**  Launching a clip is a performance,
+not an edit: it goes straight to the audio thread, which starts the clip
+on the next boundary of the launch quantize by a clock that never jumps
+back with the arrangement's loop.  Session clips are rows of the score
+like any other, so the grid, too, rebuilds nothing.  The Lisp renderer
+and the worklet both take a script of launches at given frames, which is
+how a performance is held to the same frames on both sides.
 
 **One door.**  The page drives the song by sending forms of the Lisp API
 (`source/api.lisp`, `docs/api.md`), so nothing can be done with the
@@ -107,8 +115,8 @@ the other half.
 
 ## Not built yet
 
-The clip-launch grid over the same clips; recording from a keyboard or
-microphone into a clip; stretching audio to the tempo; samples on drum
+Recording from a keyboard or microphone into a clip, or a performance
+into the arrangement; follow actions; tempo per scene; stretching audio to the tempo; samples on drum
 pads; saved songs that carry their audio; tempo changes along the song;
 plugin hosting.
 

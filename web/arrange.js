@@ -372,7 +372,7 @@ function trackRow(track, width) {
       renderSelection();
       renderDetail();
     },
-  }, track.clips.map((clip) => clipElement(track, clip)));
+  }, track.clips.filter((clip) => clip.scene === null).map((clip) => clipElement(track, clip)));
   return el('div', { class: 'track-row', 'data-track': track.id }, trackHead(track), lane);
 }
 
@@ -436,6 +436,7 @@ function duplicateClip() {
 
 // What moves between states: the playhead, the position, the meters.
 function animate() {
+  animateSession();
   if (T.song) {
     const head = $('#playhead');
     if (head) {

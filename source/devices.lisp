@@ -407,8 +407,8 @@ as a plain saw.  Anything else is set through the pads' parameters.")
   "After a jump: what was playing stops, and a clip the new place falls
 inside starts from there.  A long clip must not wait for its beginning."
   (sampler-release s b)
-  (let* ((o (ifloor (aref sc (+ 3 (* 2 ti)))))
-         (n (ifloor (aref sc (+ 4 (* 2 ti)))))
+  (let* ((o (ifloor (aref sc (+ 4 (* 2 ti)))))
+         (n (ifloor (aref sc (+ 5 (* 2 ti)))))
          (seek (sg g-seek)))
     (dotimes (i n)
       (let* ((e (+ o (* 4 i)))

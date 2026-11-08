@@ -133,6 +133,7 @@ point; the gate as it stands."
                               "loop" (or (getf clip :loop) :null)
                               "notes" (getf clip :notes)
                               "sample" (or (getf clip :sample) :null)
+                              "scene" (or (getf clip :scene) :null)
                               "offset" (getf clip :offset 0)
                               "gain" (getf clip :gain 0)
                               "transpose" (getf clip :transpose 0)))
@@ -173,6 +174,9 @@ point; the gate as it stands."
            "loopOn" (jbool (getf spec :loop-on))
            "loopStart" (getf spec :loop-start)
            "loopEnd" (getf spec :loop-end)
+           "quantize" (getf spec :quantize 4)
+           "scenes" (mapcar (lambda (s) (obj "id" (getf s :id) "name" (getf s :name)))
+                            (getf spec :scenes))
            "tracks" (loop for track in tracks
                           for place in placed
                           for i from 0
@@ -334,6 +338,10 @@ behind the gate, what went wrong going back in words."
             (destructuring-bind (kind a &optional b c) action
               (ecase kind
                 (:point (obj "kind" "point" "target" a "say" (or b :null)))
+                (:launch (obj "kind" "launch" "track" a "row" b))
+                (:scene (obj "kind" "scene" "row" a))
+                (:stop (obj "kind" "stop" "track" a))
+                (:arrange (obj "kind" "arrange" "track" a))
                 (:show (obj "kind" "show" "view" a "track" (or b :null) "clip" (or c :null))))))
           (reverse actions)))
 
@@ -382,8 +390,14 @@ and two bars for the tails to ring out."
          (frames (parse-integer (net.aserve:request-query-value "frames" req)))
          (from (let ((text (net.aserve:request-query-value "from" req)))
                  (if text (parse-integer text) 0)))
-         (song (session-song session)))
-    (multiple-value-bind (left right) (render-song song frames :from from)
+         (song (session-song session))
+         (script (let ((text (net.aserve:request-query-value "script" req)))
+                   (and text
+                        (map 'list (lambda (e)
+                                     (list (elt e 0) (intern (string-upcase (elt e 1)) :keyword)
+                                           (elt e 2) (if (> (length e) 3) (elt e 3) 0)))
+                             (yason:parse text))))))
+    (multiple-value-bind (left right) (render-song song frames :from from :script script)
       (float32-octets left right))))
 
 (defun handle-sample (req)
@@ -428,7 +442,7 @@ inherits.")
       (let ((page (lambda (req) (declare (ignore req)) (web-file "index.html"))))
         (door "/tala" "text/html; charset=utf-8" page)
         (door "/tala/" "text/html; charset=utf-8" page))
-      (dolist (script '("core.js" "arrange.js" "detail.js" "mixer.js" "prompt.js" "main.js"))
+      (dolist (script '("core.js" "arrange.js" "detail.js" "mixer.js" "session.js" "prompt.js" "main.js"))
         (let ((script script))
           (door (format nil "/tala/~a" script) "application/javascript; charset=utf-8"
                 (lambda (req) (declare (ignore req)) (web-file script)))))

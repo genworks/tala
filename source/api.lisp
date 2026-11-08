@@ -176,6 +176,11 @@ effects, clips and automation."
         (format out "Song ~s: ~a BPM, ~a/~a, loop ~:[off~;on~], beats ~a to ~a.~%"
                 (getf spec :name) (getf spec :tempo) (getf spec :numerator) (getf spec :denominator)
                 (getf spec :loop-on) (getf spec :loop-start) (getf spec :loop-end))
+        (format out "Scenes, the session's rows: ~:[none~;~:*~{~a~^, ~}~]; launches wait for ~a beats.~%"
+                (loop for scene in (getf spec :scenes)
+                      for row from 0
+                      collect (format nil "~d ~s" row (getf scene :name)))
+                (getf spec :quantize 4))
         (flet ((device-line (device index)
                  (format out "    ~@[~a: ~]~a~:[ (off)~;~]~@[, ducked by track ~a~]~@[: ~s~]~%"
                          index (device-label device) (getf device :on t)
@@ -192,6 +197,10 @@ effects, clips and automation."
                          for i from 0
                          do (device-line device i))
                    (dolist (clip (getf track :clips))
+                     (let ((scene (find (getf clip :scene) (getf spec :scenes) :key (lambda (s) (getf s :id)))))
+                       (when scene
+                         (format out "    in scene ~s (row ~d):~%"
+                                 (getf scene :name) (position scene (getf spec :scenes)))))
                      (if (getf clip :sample)
                          (format out "    audio clip ~a ~s: starts at beat ~a, ~a beats long, from ~a s into the sample, gain ~a dB, transpose ~a~%"
                                  (getf clip :id) (getf clip :name) (getf clip :start) (getf clip :length)
@@ -269,10 +278,12 @@ effects, clips and automation."
           :peak (db-of (reduce #'max (pcm-data pcm) :key #'abs))
           :phrases (pcm-phrases pcm *sample-rate*))))
 
-(define-op hear (&key (from 1) (bars 8) track)
+(define-op hear (&key (from 1) (bars 8) track scene)
   "A spectrogram and measures of BARS bars from bar FROM, of the song
-or of TRACK alone (a name)."
-  (hear-song (song) :from from :bars bars :track track))
+or of TRACK alone (a name); with SCENE, of that scene launched at once,
+from its start."
+  (hear-song (song) :from (if scene 1 from) :bars bars :track track
+                    :scene (and scene (scene-row (the-object (song) spec) scene))))
 
 ;;; The song.
 
@@ -523,11 +534,11 @@ SOURCE, so it ducks when SOURCE plays; nil listens to its own track."
     (error "Audio clips go on an audio track, one made with (add-track name :instrument :sampler); ~s is not one."
            (getf found :name))))
 
-(define-op add-audio-clip (track sample &key (start 0) length (offset 0) (gain 0) (transpose 0) name)
+(define-op add-audio-clip (track sample &key (start 0) length (offset 0) (gain 0) (transpose 0) name scene)
   "SAMPLE on an audio TRACK from beat START.  OFFSET is where in the
 sample it starts, in seconds; LENGTH, in beats, runs to the sample's end
 when unsaid; GAIN is in dB; TRANSPOSE in semitones changes its pitch and
-speed together."
+speed together.  With SCENE it goes in that scene's slot of the session."
   (edit-song! (song)
               (lambda (spec)
                 (let* ((found (find-track spec track))
@@ -539,6 +550,11 @@ speed together."
                                    :start start :length beats :sample (getf s :id)
                                    :offset offset :gain gain :transpose transpose)))
                   (check-sampler found)
+                  (when scene
+                    (let ((in (find-scene spec scene)))
+                      (check-slot-free found in)
+                      (put! clip :scene (getf in :id))
+                      (put! clip :start 0)))
                   (unless (and (realp start) (<= 0 start) (realp offset) (<= 0 offset)
                                (plusp seconds) (plusp beats))
                     (error "A clip starts at a beat from 0 up, at an offset within the sample, which is ~,2f seconds long."
@@ -571,16 +587,21 @@ the model knows."
                   (put! spec :samples (remove s (getf spec :samples)))
                   (list :deleted (getf s :name))))))
 
-(define-op add-clip (track &key name (start 0) (length 4) loop notes)
+(define-op add-clip (track &key name (start 0) (length 4) loop notes scene)
   "A clip on TRACK from beat START, LENGTH beats long.  With LOOP, its
-notes repeat every LOOP beats.  NOTES as in add-notes."
+notes repeat every LOOP beats.  NOTES as in add-notes.  With SCENE it
+goes in that scene's slot of the session instead of on the timeline."
   (edit-song! (song)
               (lambda (spec)
                 (let* ((found (find-track spec track))
+                       (in (and scene (find-scene spec scene)))
                        (clip (list :id (next-id! spec)
                                    :name (or name (getf found :name))
-                                   :start start :length length :loop loop
+                                   :start (if in 0 start) :length length :loop loop
                                    :notes (mapcar #'note-spec notes))))
+                  (when in
+                    (check-slot-free found in)
+                    (put! clip :scene (getf in :id)))
                   (unless (getf found :instrument)
                     (error "Clips go on instrument tracks; ~s is not one." (getf found :name)))
                   (when (eq (getf (getf found :instrument) :kind) :sampler)
@@ -668,6 +689,141 @@ The drum kit's pads are pitches 36 to 43."
                                          (getf c :notes)))
                   (list :clip (getf c :id) :semitones semitones)))))
 
+;;; The session: scenes, slots, launching.
+
+(defun find-scene (spec scene)
+  "The scene SCENE of SPEC: a number counts the rows from 0, a string
+names one."
+  (or (typecase scene
+        (integer (nth scene (getf spec :scenes)))
+        (string (find scene (getf spec :scenes) :key (lambda (s) (getf s :name)) :test #'string-equal)))
+      (error "There is no scene ~s.  The scenes are: ~{~s~^, ~}."
+             scene (mapcar (lambda (s) (getf s :name)) (getf spec :scenes)))))
+
+(defun scene-row (spec scene)
+  (position (find-scene spec scene) (getf spec :scenes)))
+
+(defun slot-clip (track scene-id)
+  (find scene-id (getf track :clips) :key (lambda (c) (getf c :scene))))
+
+(defun check-slot-free (track scene)
+  (when (slot-clip track (getf scene :id))
+    (error "Track ~s already has a clip in scene ~s; delete it or choose another scene."
+           (getf track :name) (getf scene :name))))
+
+(define-op add-scene (name &key index)
+  "A new scene, a row of the session, called NAME (nil for its number),
+at the end or at INDEX."
+  (edit-song! (song)
+              (lambda (spec)
+                (let* ((scenes (getf spec :scenes))
+                       (scene (list :id (next-id! spec)
+                                    :name (or name (princ-to-string (1+ (length scenes))))))
+                       (at (if index (max 0 (min index (length scenes))) (length scenes))))
+                  (put! spec :scenes (append (subseq scenes 0 at) (list scene) (nthcdr at scenes)))
+                  (list :scene (getf scene :name) :row at)))))
+
+(define-op rename-scene (scene name)
+  "Name a scene."
+  (edit-song! (song) (lambda (spec) (put! (find-scene spec scene) :name name)))
+  (list :scene name))
+
+(define-op delete-scene (scene)
+  "Remove a scene and the clips in its slots."
+  (edit-song! (song)
+              (lambda (spec)
+                (let ((found (find-scene spec scene)))
+                  (dolist (track (getf spec :tracks))
+                    (put! track :clips (remove (getf found :id) (getf track :clips)
+                                               :key (lambda (c) (getf c :scene)))))
+                  (put! spec :scenes (remove found (getf spec :scenes)))
+                  (list :deleted (getf found :name))))))
+
+(define-op duplicate-scene (scene &optional name)
+  "A copy of a scene and its clips, in the row after it: the start of a variation."
+  (edit-song! (song)
+              (lambda (spec)
+                (let* ((found (find-scene spec scene))
+                       (copy (list :id (next-id! spec) :name (or name (format nil "~a copy" (getf found :name)))))
+                       (scenes (getf spec :scenes))
+                       (at (1+ (position found scenes))))
+                  (put! spec :scenes (append (subseq scenes 0 at) (list copy) (nthcdr at scenes)))
+                  (dolist (track (getf spec :tracks))
+                    (let ((clip (slot-clip track (getf found :id))))
+                      (when clip
+                        (let ((new (copy-tree clip)))
+                          (put! new :id (next-id! spec))
+                          (put! new :scene (getf copy :id))
+                          (put! track :clips (append (getf track :clips) (list new)))))))
+                  (list :scene (getf copy :name) :row at)))))
+
+(define-op set-launch-quantize (beats)
+  "Launches wait for the next multiple of BEATS: 4 is a bar of 4/4, 1 a
+beat, 0 at once."
+  (unless (and (realp beats) (<= 0 beats 64))
+    (error "The launch quantize is a number of beats from 0 to 64, not ~s." beats))
+  (edit-song! (song) (lambda (spec) (put! spec :quantize beats)))
+  (list :quantize beats))
+
+(defun ui-track-index (spec track)
+  (or (position (find-track spec track) (getf spec :tracks))
+      (error "Only an instrument track plays clips; ~s is not one." track)))
+
+(define-op launch (track scene)
+  "Play the clip in TRACK's slot of SCENE, looping, from the next
+launch boundary; an empty slot stops the track.  A performance on the
+page, not an edit: undo does not take it back."
+  (let ((spec (the-object (song) spec)))
+    (push (list :launch (ui-track-index spec track) (scene-row spec scene)) *ui-actions*)
+    (list :launching track :scene scene)))
+
+(define-op launch-scene (scene)
+  "Play every clip in SCENE's row together; tracks with an empty slot stop."
+  (let ((spec (the-object (song) spec)))
+    (push (list :scene (scene-row spec scene)) *ui-actions*)
+    (list :launching-scene scene)))
+
+(define-op stop-clips (&optional track)
+  "Stop TRACK's clip, or every track's, at the next launch boundary."
+  (let ((spec (the-object (song) spec)))
+    (push (list :stop (if track (ui-track-index spec track) -1)) *ui-actions*)
+    (list :stopping (or track :all))))
+
+(define-op back-to-arrangement (&optional track)
+  "TRACK, or every track, plays its arrangement again from where the song is."
+  (let ((spec (the-object (song) spec)))
+    (push (list :arrange (if track (ui-track-index spec track) -1)) *ui-actions*)
+    (list :back-to-arrangement (or track :all))))
+
+(define-op arrange-scene (scene start &key length)
+  "Copy SCENE's clips onto the timeline from beat START, LENGTH beats
+long (the longest clip's length when unsaid), each repeating as it
+loops in the session: how a song is built from its scenes."
+  (edit-song! (song)
+              (lambda (spec)
+                (let* ((found (find-scene spec scene))
+                       (clips (loop for track in (getf spec :tracks)
+                                    for clip = (slot-clip track (getf found :id))
+                                    when clip collect (cons track clip)))
+                       (span (or length (reduce #'max clips :key (lambda (c) (getf (cdr c) :length))
+                                                            :initial-value 0))))
+                  (unless clips
+                    (error "Scene ~s has no clips." (getf found :name)))
+                  (unless (and (realp start) (>= start 0) (plusp span))
+                    (error "A scene is placed at a beat from 0 up, for a positive length."))
+                  (loop for (track . clip) in clips
+                        do (let ((new (copy-tree clip)))
+                             (remf new :scene)
+                             (put! new :id (next-id! spec))
+                             (put! new :start start)
+                             (if (getf clip :sample)
+                                 (put! new :length (min span (getf clip :length)))
+                                 (progn
+                                   (put! new :loop (or (getf clip :loop) (getf clip :length)))
+                                   (put! new :length span)))
+                             (put! track :clips (append (getf track :clips) (list new)))))
+                  (list :scene (getf found :name) :start start :length span :clips (length clips))))))
+
 ;;; Automation.
 
 (defun lane-address (found device param)
@@ -750,5 +906,6 @@ CLIP, :notes (the piano roll)."
   (mapcar (lambda (name) (intern name :tala-api))
           '("DESCRIBE-SONG" "SONG-INFO" "DEVICE-KINDS" "DEVICE-CONTROLS" "DEVICE-VALUES" "CLIP-NOTES"
             "SAMPLES" "SAMPLE-INFO"
-            "HEAR" "POINT-AT" "SHOW" "UNDO" "REDO"))
+            "HEAR" "POINT-AT" "SHOW" "UNDO" "REDO"
+            "LAUNCH" "LAUNCH-SCENE" "STOP-CLIPS" "BACK-TO-ARRANGEMENT"))
   "The operations that leave nothing for a prompt's undo to take back.")

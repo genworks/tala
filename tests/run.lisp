@@ -198,6 +198,11 @@ of each sample as a float32, mixed."
              (text (song-text song))
              (spec (read-song-text text)))
         (equal spec (the-object song spec))))
+    (check "a song from before the session gets its scenes"
+      (let ((spec (read-song-text (format nil "~s" '(:name "Old" :tempo 120 :next-id 9 :tracks nil
+                                                        :master (:id 1 :name "Master" :devices nil))))))
+        (and (= 4 (length (getf spec :scenes))) (= 4 (getf spec :quantize))
+             (= 9 (getf (first (getf spec :scenes)) :id)) (= 13 (getf spec :next-id)))))
     (check "the file's reader runs nothing"
       (handler-case (progn (read-song-text "#.(error \"ran\")") nil)
         (error (e) (not (search "ran" (princ-to-string e))))))))
@@ -467,6 +472,99 @@ voice has phrases: (values octets channels)."
             (and (< (peak-of (render-song lost 24000)) 1d-9)
                  (search "\"missing\":true" (json-text (song-json lost))))))))))
 
+(defun launch-song (&rest forms)
+  "A song at 120 BPM (a beat is 24000 frames) with a short synth pluck,
+and FORMS run on it."
+  (let ((song (make-song)))
+    (forms-pass? song "(set-tempo 120) (set-loop 0 64)
+(add-track \"A\" :values (:sustain 0 :decay 0.05 :release 0.01))")
+    (dolist (text forms) (forms-pass? song text))
+    song))
+
+(defun loud? (left from to) (> (peak-of (subseq left from to)) 0.02d0))
+(defun quiet? (left from to) (< (peak-of (subseq left from to)) 0.0005d0))
+
+(defun test-session ()
+  (check "a new song has four scenes and launches on the bar"
+    (let ((spec (the-object (make-song) spec)))
+      (and (= 4 (length (getf spec :scenes))) (= 4 (getf spec :quantize)))))
+  (let ((song (launch-song "(add-clip \"A\" :scene 0 :length 1 :notes ((60 0 0.1)))")))
+    (check "a clip in a scene is not on the timeline"
+      (quiet? (render-song song 48000) 0 48000))
+    (check "launched, it plays at once on a boundary, and loops"
+      (let ((left (render-song song 72000 :script '((0 :launch 0 0)))))
+        (and (loud? left 0 3000) (quiet? left 8000 23000)
+             (loud? left 24000 27000) (loud? left 48000 51000))))
+    (check "a launch waits for the next boundary of the quantize"
+      (let ((left (render-song song (* 6 24000) :script '((6000 :launch 0 0)))))
+        ;; four beats at 120 BPM: frame 96000
+        (and (quiet? left 0 95990) (loud? left 96000 99000))))
+    (check "a quantize of 0 launches at once"
+      (let ((now (launch-song "(set-launch-quantize 0)"
+                               "(add-clip \"A\" :scene 0 :length 1 :notes ((60 0 0.1)))")))
+        (let ((left (render-song now 24000 :script '((6000 :launch 0 0)))))
+          (and (quiet? left 0 5990) (loud? left 6000 9000)))))
+    (check "the frames do not depend on how they are asked for, a launch and all"
+      (let ((script '((0 :launch 0 0) (30000 :launch 0 -1))))
+        (equalp (render-song song 120000 :script script)
+                (render-song song 120000 :script script :block-size 128))))
+    (check "an empty slot stops the track at the boundary"
+      (let ((left (render-song song (* 8 24000) :script '((0 :launch 0 0) (30000 :launch 0 -1)))))
+        (and (loud? left 72000 75000) (quiet? left 96000 (* 8 24000))))))
+  (check "launched clips keep time when the arrangement loops"
+    (let ((song (launch-song "(set-loop 0 1)"
+                              "(add-clip \"A\" :scene 0 :length 2 :notes ((60 1 0.1)))")))
+      (let ((left (render-song song 48000 :script '((0 :launch 0 0)))))
+        (and (quiet? left 0 23000) (loud? left 24000 27000)))))
+  (check "back to the arrangement plays the timeline again"
+    (let ((song (launch-song "(add-clip \"A\" :start 0 :length 16 :loop 1 :notes ((72 0 0.1)))"
+                              "(add-clip \"A\" :scene 0 :length 1)")))
+      (let ((left (render-song song (* 8 24000)
+                               :script '((0 :launch 0 0) (50000 :arrange -1)))))
+        (and (quiet? left 0 48000) (loud? left 72000 75000)))))
+  (check "a launch ends the notes the track was holding"
+    (let ((song (launch-song "(set-device \"A\" :instrument :sustain 1 :release 0.01)"
+                              "(add-clip \"A\" :scene 0 :length 8 :notes ((60 0 8)))"
+                              "(add-clip \"A\" :scene 1 :length 8)")))
+      (let ((left (render-song song (* 6 24000) :script '((0 :launch 0 0) (1000 :launch 0 1)))))
+        (and (loud? left 50000 90000) (quiet? left 100000 (* 6 24000))))))
+  (check "scenes, slots and launches leave the plan and the program alone"
+    (let* ((song (launch-song))
+           (plan (the-object song plan)))
+      (render-song song 480)
+      (let ((builds (copy-list *builds*)))
+        (forms-pass? song "(add-scene \"Drop\") (add-clip \"A\" :scene \"Drop\" :length 4 :notes ((60 0 1)))
+(duplicate-scene \"Drop\") (set-launch-quantize 1)")
+        (render-song song 480 :script '((0 :launch 0 4)))
+        (and (equal plan (the-object song plan)) (equal builds *builds*)))))
+  (check "a slot holds one clip"
+    (let ((song (launch-song "(add-clip \"A\" :scene 0)")))
+      (search "already has a clip" (form-error song "(add-clip \"A\" :scene 0)"))))
+  (check "deleting a scene takes its clips; duplicating copies them"
+    (let ((song (launch-song "(add-clip \"A\" :scene \"2\" :notes ((60 0 1)))" "(duplicate-scene \"2\" \"Two again\")")))
+      (let ((with-copy (length (getf (first (getf (the-object song spec) :tracks)) :clips))))
+        (forms-pass? song "(delete-scene \"2\")")
+        (and (= 2 with-copy)
+             (= 1 (length (getf (first (getf (the-object song spec) :tracks)) :clips)))
+             (string= "Two again" (getf (second (getf (the-object song spec) :scenes)) :name))))))
+  (check "a scene arranged on the timeline plays there, repeating"
+    (let ((song (launch-song "(add-clip \"A\" :scene 0 :length 1 :notes ((60 0 0.1)))"
+                              "(arrange-scene 0 8 :length 4)")))
+      (let ((left (render-song song (* 13 24000))))
+        (and (quiet? left 0 (* 8 24000)) (loud? left (* 8 24000) (+ 3000 (* 8 24000)))
+             (loud? left (* 11 24000) (+ 3000 (* 11 24000))) (quiet? left (* 12 24000) (* 13 24000))))))
+  (check "the model can hear a scene"
+    (let ((song (launch-song "(add-clip \"A\" :scene 0 :length 1 :notes ((60 0 0.5)))")))
+      (let ((note (picture-note (let ((*song* song)) (with-audio-floats (tala-api:hear :scene 0 :bars 1))))))
+        (and (search "scene \"1\" of the session" note) (not (search "Peak -120" note))))))
+  (check "launching from a prompt reaches the page, and is no edit"
+    (let ((song (launch-song "(add-clip \"A\" :scene 0)")))
+      (let ((*ui-actions* nil)
+            (depth (length (the-object song undo-entries))))
+        (forms-pass? song "(launch \"A\" 0) (launch-scene \"2\") (stop-clips) (back-to-arrangement \"A\")")
+        (and (equal (reverse *ui-actions*) '((:launch 0 0) (:scene 1) (:stop -1) (:arrange 0)))
+             (= depth (length (the-object song undo-entries))))))))
+
 (defun test-agent-survives-reload ()
   (check "a reload keeps where the agent was pointed"
     (let ((saved (sexp-agent:agent-messages-url *agent*)))
@@ -619,6 +717,7 @@ change: (record-golden).")
   (test-render)
   (test-hearing)
   (test-samples)
+  (test-session)
   (test-agent-survives-reload)
   (test-json)
   (test-reference)

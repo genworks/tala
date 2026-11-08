@@ -20,11 +20,14 @@
 ;; The engine's state, at the start of S.  BEAT is the song position;
 ;; BPF how far a frame moves it; SUB and TICK count frames to the next
 ;; slow update (16) and the next control update (64); RESEEK asks the
-;; sequencers to find their place again, from beat SEEK.
-(define-slots g beat playing bpf sr isr sub tick reseek seek loop-on loop-start loop-end)
+;; sequencers to find their place again, from beat SEEK.  CLOCK counts
+;; beats since play began and never jumps back with the loop: launched
+;; clips keep time by it, and look for their place again (REFIND) only
+;; when their notes change, never when the arrangement wraps.
+(define-slots g beat playing bpf sr isr sub tick reseek seek loop-on loop-start loop-end clock refind)
 
 ;; The song's own parameters, at the start of P.
-(define-slots gp tempo loop-on loop-start loop-end)
+(define-slots gp tempo loop-on loop-start loop-end quantize)
 
 (define-dsp d-sin ((x :num)) :inline
   "sin(2 pi X): X in turns, any size."

@@ -130,7 +130,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Tab') {
     e.preventDefault();
     if (e.shiftKey) { T.detail = T.detail === 'notes' ? 'devices' : 'notes'; renderDetail(); }
-    else T.setView(T.view === 'mixer' ? 'arrangement' : 'mixer');
+    else T.setView(T.view === 'arrangement' ? 'session' : 'arrangement');
     return;
   }
   if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelection(); return; }
@@ -188,18 +188,19 @@ $('#prompt-form').addEventListener('submit', (e) => {
 
 // The page's half of the regression suite: the worklet, in a real
 // AudioContext's own offline form, against the server's frames.
-T.selfTest = async function selfTest(frames = 48000) {
+T.selfTest = async function selfTest(frames = 48000, script = []) {
   await T.synced;
   const song = T.song;
   const context = new OfflineAudioContext(2, frames, 48000);
   await loadModule(context, song.processor);
   const node = new AudioWorkletNode(context, song.processor, {
     numberOfInputs: 0, outputChannelCount: [2],
-    processorOptions: { params: song.params, score: song.score, pool: T.pool, playing: true, beat: 0 },
+    processorOptions: { params: song.params, score: song.score, pool: T.pool, playing: true, beat: 0, script },
   });
   node.connect(context.destination);
   const rendered = await context.startRendering();
-  const buffer = await (await fetch(`/tala/api/render.f32?s=${encodeURIComponent(T.session)}&frames=${frames}`)).arrayBuffer();
+  const scripted = script.length ? `&script=${encodeURIComponent(JSON.stringify(script))}` : '';
+  const buffer = await (await fetch(`/tala/api/render.f32?s=${encodeURIComponent(T.session)}&frames=${frames}${scripted}`)).arrayBuffer();
   const server = new Float32Array(buffer);
   const left = rendered.getChannelData(0);
   const right = rendered.getChannelData(1);
@@ -318,6 +319,50 @@ T.sampleTest = async function sampleTest() {
   return { ok: failed.length === 0, failed, checks, frames: parity.frames, different: parity.different, info: info.results[0].value };
 };
 
+// The session as a person plays it, on a session of its own (it clears
+// the song): a performance held to the server's render, then the grid
+// driven by its buttons.
+T.sessionTest = async function sessionTest() {
+  const checks = {};
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  await T.send(form('clear-song'));
+  await T.send(form('set-tempo', 120), form('set-loop', 0, 2),
+               form('add-track', 'Kick', kw('instrument'), kw('drums')),
+               form('add-clip', 'Kick', kw('length'), 4, kw('notes'), [[36, 0, 0.1], [36, 1, 0.1], [36, 2, 0.1], [36, 3, 0.1]]),
+               form('add-clip', 'Kick', kw('scene'), 1, kw('length'), 2, kw('notes'), [[36, 0, 0.1], [38, 1, 0.1]]),
+               form('add-track', 'Lead', kw('values'), [kw('sustain'), 0.3]),
+               form('add-clip', 'Lead', kw('scene'), 0, kw('length'), 4, kw('notes'), [[60, 0, 1], [63, 1, 1], [67, 2, 2]]),
+               form('add-clip', 'Lead', kw('scene'), 1, kw('length'), 1, kw('loop'), 1, kw('notes'), [[72, 0, 0.25]]),
+               form('rename-scene', 0, 'Groove'), form('rename-scene', 1, 'Drop'));
+  await T.synced;
+  T.setView('session');
+  renderSession();
+  checks.grid = document.querySelectorAll('.slot').length === 2 * T.song.scenes.length
+    && document.querySelectorAll('.slot.full').length === 3;
+  // a performance: scene 0 at once, the drop launched mid-bar so it
+  // waits for the bar, then everything back to the timeline
+  const script = [[0, 'launch', 0, -1], [0, 'launch', 1, 0], [30000, 'launch', 0, 1], [30000, 'launch', 1, 1],
+                  [200000, 'arrange', -1]];
+  const parity = await T.selfTest(48000 * 6, script);
+  checks.parity = parity.ok;
+  checks.parityHeard = parity.peak > 0.05;
+  // the buttons
+  await T.launchScene(0);
+  await wait(700);
+  const lead = T.song.tracks.findIndex((t) => t.name === 'Lead');
+  checks.launched = T.sessionState && T.sessionState[lead][0] > 0.5 && T.sessionState[lead][1] === 1;
+  checks.playingShown = Boolean(document.querySelector('.slot.playing'));
+  checks.arrangeButton = !$('#back-to-arrangement').hidden;
+  T.backToArrangement();
+  await wait(500);
+  checks.backToTimeline = T.sessionState && T.sessionState.every((s) => s[0] < 0.5);
+  T.stop();
+  await T.send(form('arrange-scene', 'Drop', 8, kw('length'), 8));
+  checks.arranged = T.song.tracks.every((t) => t.clips.some((c) => c.scene === null && c.start === 8));
+  const failed = Object.entries(checks).filter(([, v]) => !v).map(([k]) => k);
+  return { ok: failed.length === 0, failed, checks, frames: parity.frames, different: parity.different };
+};
+
 async function start() {
   const query = new URLSearchParams(location.search);
   T.session = query.get('s') || (() => {
@@ -329,7 +374,7 @@ async function start() {
     }
     return id;
   })();
-  T.renderers.push(renderTransport, renderFileButtons, renderSamples, renderArrangement, renderMixer, renderTabs, renderDetail);
+  T.renderers.push(renderTransport, renderFileButtons, renderSamples, renderArrangement, renderSession, renderMixer, renderTabs, renderDetail);
   try {
     const [kinds, song] = await Promise.all([
       fetch('/tala/api/kinds').then((r) => r.json()),

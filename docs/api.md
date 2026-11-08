@@ -151,6 +151,43 @@ look for:
   `:drums` below.
 - `(transpose-notes track clip semitones)`.
 
+## The session: scenes and launching
+
+Besides the timeline, a song has a **session**: a grid with a column for
+each instrument track and a row for each **scene**.  A slot holds one
+clip.  Launching a clip plays it from its own start, looping, in place
+of that track's timeline, until another clip is launched on the track,
+the track is stopped, or it is sent back to the arrangement.  Launching
+a scene launches its whole row.  A launch waits for the next multiple of
+the song's launch quantize (a bar by default), so it lands in time.
+
+The session is for trying parts against each other and for performing;
+the timeline is the finished song.  A good way to build a track: make
+the parts as scenes (an intro, a groove, a break, a drop), check each
+with `(hear :scene ...)`, then lay them out with `arrange-scene`.
+
+- `(add-scene name &key index)` — a new row; `name` nil numbers it.
+- `(rename-scene scene name)`, `(delete-scene scene)` (its clips go too),
+  `(duplicate-scene scene &optional name)` (the start of a variation).
+- Scenes go by number from 0 or by name.
+- `(add-clip track :scene scene ...)` and `(add-audio-clip track sample
+  :scene scene ...)` put a clip in that scene's slot instead of on the
+  timeline.  A slot holds one clip.  A clip's `:length` is its loop.
+- `(set-launch-quantize beats)` — 4 waits for the bar in 4/4, 1 for the
+  beat, 0 launches at once.
+- `(arrange-scene scene start &key length)` — copies the scene's clips
+  onto the timeline from beat `start`, `length` beats long (the longest
+  clip when unsaid), each repeating as it loops.
+- `(hear :scene scene :bars n)` — the scene as it sounds launched.
+
+Launching is a performance on the page, not an edit, and undo does not
+take it back:
+
+- `(launch track scene)` — the clip in that slot; an empty slot stops
+  the track.
+- `(launch-scene scene)`, `(stop-clips &optional track)`,
+  `(back-to-arrangement &optional track)`.
+
 ## Recorded sound
 
 The person imports audio files on the page; you work with what is

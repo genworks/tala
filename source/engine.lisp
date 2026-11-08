@@ -26,13 +26,23 @@
 ;; thread is the difference between sound and a dropout.
 ;;
 ;; The score, SC: [tracks, offset of the lanes, offset of the regions,
-;; then for each track its offset and count, the notes (beat length
-;; pitch velocity), then the lanes: count, and each lane's parameter
-;; index, count, (beat value)..., then the regions, six numbers each
-;; (devices.lisp).  POOL is the song's recorded sound (samples.lisp).
+;; offset of the session table, then for each track its offset and count,
+;; the notes (beat length pitch velocity), the session clips' notes, the
+;; lanes: count, and each lane's parameter index, count, (beat
+;; value)..., the regions, six numbers each (devices.lisp), and the
+;; session table: for each track the offset and count of its slots, and
+;; for each slot the offset and count of its notes and its length, zero
+;; for an empty slot].  POOL is the song's recorded sound (samples.lisp).
+;;
+;; The session: a track plays its arrangement (MODE 0) until a clip is
+;; launched on it (MODE 1), and then that clip, looping, until it is
+;; sent back.  A launch waits for the next multiple of the song's
+;; QUANTIZE beats on the CLOCK, so it lands on the bar however late the
+;; click came; SLOT and QUEUED hold a row plus one, so zero is none and
+;; a QUEUED of -1 stops the track.
 ;;
 
-(define-slots tr bus-l bus-r gl gr cl cr ready peak idx out-l out-r send0 send1 send2 send3 send4 send5 send6 send7)
+(define-slots tr bus-l bus-r gl gr cl cr ready peak idx mode slot origin sidx queued qat out-l out-r send0 send1 send2 send3 send4 send5 send6 send7)
 (define-slots tp gain pan active send0 send1 send2 send3 send4 send5 send6 send7)
 
 (defparameter *most-returns* 8 "The return tracks a song may have.")
@@ -54,6 +64,7 @@ resamples for the device, if it must, after the engine.")
 
 (define-dsp transport-start ((s :buf) (beat :num)) :nil
   (setf (sg g-beat) beat)
+  (setf (sg g-clock) beat)
   (setf (sg g-seek) beat)
   (setf (sg g-reseek) 1d0)
   (setf (sg g-playing) 1d0))
@@ -70,6 +81,7 @@ resamples for the device, if it must, after the engine.")
     (let* ((beat (+ (sg g-beat) (sg g-bpf)))
            (from (sg g-loop-start))
            (to (sg g-loop-end)))
+      (setf (sg g-clock) (+ (sg g-clock) (sg g-bpf)))
       (if (and (> (sg g-loop-on) 0.5d0) (> to from) (>= beat to))
           (progn
             (setf (sg g-beat) (- beat (- to from)))
@@ -79,8 +91,8 @@ resamples for the device, if it must, after the engine.")
 
 (define-dsp seq-seek ((s :buf) (sc :buf) (b :int) (ti :int)) :nil
   "Track TI's next note: the first at or after the seek beat."
-  (let* ((o (ifloor (aref sc (+ 3 (* 2 ti)))))
-         (n (ifloor (aref sc (+ 4 (* 2 ti)))))
+  (let* ((o (ifloor (aref sc (+ 4 (* 2 ti)))))
+         (n (ifloor (aref sc (+ 5 (* 2 ti)))))
          (seek (sg g-seek))
          (i 0))
     (loop while (and (< i n) (< (aref sc (+ o (* 4 i))) seek))
@@ -89,8 +101,8 @@ resamples for the device, if it must, after the engine.")
 
 (define-dsp seq-due ((s :buf) (sc :buf) (b :int) (ti :int)) :inline
   "A positive number when track TI's next note has come."
-  (let* ((o (ifloor (aref sc (+ 3 (* 2 ti)))))
-         (n (ifloor (aref sc (+ 4 (* 2 ti)))))
+  (let* ((o (ifloor (aref sc (+ 4 (* 2 ti)))))
+         (n (ifloor (aref sc (+ 5 (* 2 ti)))))
          (i (ifloor (st tr-idx))))
     (if (and (< i n) (<= (aref sc (+ o (* 4 i))) (sg g-beat))) 1d0 0d0)))
 
@@ -100,7 +112,99 @@ resamples for the device, if it must, after the engine.")
 
 (define-dsp seq-offset ((s :buf) (sc :buf) (b :int) (ti :int)) :num
   "Where track TI's current note is in the score, as a double."
-  (+ (aref sc (+ 3 (* 2 ti))) (* 4d0 (dfloor (st tr-idx)))))
+  (+ (aref sc (+ 4 (* 2 ti))) (* 4d0 (dfloor (st tr-idx)))))
+
+;;; The session.
+
+(define-dsp session-slot ((sc :buf) (ti :int) (row :num)) :inline
+  "Where row ROW of track TI's slots is in the score, or -1 when the slot
+is empty or there is no such row."
+  (let* ((t0 (+ (ifloor (aref sc 3)) (* 2 ti)))
+         (base (ifloor (aref sc t0)))
+         (count (ifloor (aref sc (+ t0 1))))
+         (r (ifloor row)))
+    (if (and (>= r 0) (< r count) (> (aref sc (+ base (* 3 r) 2)) 0d0))
+        (dfloat (+ base (* 3 r)))
+        -1d0)))
+
+(define-dsp session-queue ((s :buf) (p :buf) (b :int) (row :num)) :nil
+  "Launch row ROW on the track at B at the next boundary; -1 stops it."
+  (let* ((q (aref p gp-quantize))
+         (clock (sg g-clock)))
+    (setf (st tr-queued) (if (< row 0d0) -1d0 (+ row 1d0)))
+    (setf (st tr-qat) (if (> q 0d0)
+                          (* q (dfloor (/ (+ clock q -0.000001d0) q)))
+                          clock))))
+
+(define-dsp session-launch ((s :buf) (b :int)) :inline
+  "A positive number when a queued launch takes place this frame."
+  (let* ((queued (st tr-queued))
+         (fire (and (not (= queued 0d0)) (>= (sg g-clock) (st tr-qat)))))
+    (when fire
+      (setf (st tr-mode) 1d0)
+      (setf (st tr-slot) (if (< queued 0d0) 0d0 queued))
+      (setf (st tr-origin) (st tr-qat))
+      (setf (st tr-sidx) 0d0)
+      (setf (st tr-queued) 0d0))
+    (if fire 1d0 0d0)))
+
+(define-dsp session-wrap ((s :buf) (sc :buf) (b :int) (ti :int)) :nil
+  "The playing clip begun again each time its length has passed."
+  (when (and (> (st tr-mode) 0.5d0) (> (st tr-slot) 0.5d0))
+    (let* ((at (session-slot sc ti (- (st tr-slot) 1d0))))
+      (if (< at 0d0)
+          ;; its clip was taken away
+          (setf (st tr-slot) 0d0)
+          (let* ((len (aref sc (+ (ifloor at) 2))))
+            (loop while (>= (- (sg g-clock) (st tr-origin)) len)
+                  do (setf (st tr-origin) (+ (st tr-origin) len))
+                     (setf (st tr-sidx) 0d0)))))))
+
+(define-dsp session-due ((s :buf) (sc :buf) (b :int) (ti :int)) :inline
+  "A positive number when the playing clip's next note has come."
+  (let* ((result 0d0))
+    (when (and (> (st tr-mode) 0.5d0) (> (st tr-slot) 0.5d0))
+      (let* ((at (session-slot sc ti (- (st tr-slot) 1d0))))
+        (when (>= at 0d0)
+          (let* ((a (ifloor at))
+                 (o (ifloor (aref sc a)))
+                 (n (ifloor (aref sc (+ a 1))))
+                 (i (ifloor (st tr-sidx))))
+            (when (and (< i n) (<= (aref sc (+ o (* 4 i))) (- (sg g-clock) (st tr-origin))))
+              (setf result 1d0))))))
+    result))
+
+(define-dsp session-event ((s :buf) (sc :buf) (b :int) (ti :int)) :num
+  "Where the playing clip's current note is in the score."
+  (let* ((a (ifloor (session-slot sc ti (- (st tr-slot) 1d0)))))
+    (+ (aref sc a) (* 4d0 (dfloor (st tr-sidx))))))
+
+(define-dsp session-seek ((s :buf) (sc :buf) (b :int) (ti :int)) :nil
+  "The playing clip's next note found again, after its notes changed."
+  (when (and (> (st tr-mode) 0.5d0) (> (st tr-slot) 0.5d0))
+    (let* ((at (session-slot sc ti (- (st tr-slot) 1d0))))
+      (when (>= at 0d0)
+        (let* ((a (ifloor at))
+               (o (ifloor (aref sc a)))
+               (n (ifloor (aref sc (+ a 1))))
+               (pos (- (sg g-clock) (st tr-origin)))
+               (i 0))
+          (loop while (and (< i n) (< (aref sc (+ o (* 4 i))) pos))
+                do (setf i (+ i 1)))
+          (setf (st tr-sidx) (dfloat i)))))))
+
+(define-dsp session-arrange ((s :buf) (b :int)) :nil
+  "The track back to its arrangement, from where the song is now."
+  (setf (st tr-mode) 0d0)
+  (setf (st tr-slot) 0d0)
+  (setf (st tr-queued) 0d0)
+  (setf (sg g-seek) (sg g-beat))
+  (setf (sg g-reseek) 1d0))
+
+(define-dsp session-stop ((s :buf) (b :int)) :nil
+  "Nothing playing or waiting on the track; it keeps its mode."
+  (setf (st tr-slot) 0d0)
+  (setf (st tr-queued) 0d0))
 
 (define-dsp lane-value ((sc :buf) (q :int) (m :int) (beat :num)) :num
   "The lane of M points at SC[Q] at BEAT: a straight line from point to
@@ -216,6 +320,14 @@ param-size).  A device's on switch sits just before its parameters."
       ;; a clip's event carries its region where a note has a pitch
       (:sampler `(sampler-start s sc ,b pitch vel gate 0d0)))))
 
+(defun release-forms (instrument)
+  "What ends INSTRUMENT's sounding notes, for a launch."
+  (let ((b (getf instrument :state)))
+    (case (getf instrument :kind)
+      (:synth `((synth-note-off s ,b -1d0)))
+      (:sampler `((sampler-release s ,b)))
+      (t '(nil)))))
+
 (defun instrument-run-form (instrument bus)
   "The call that makes INSTRUMENT's sound on the bus at BUS."
   (let ((b (getf instrument :state))
@@ -255,13 +367,25 @@ param-size).  A device's on switch sits just before its parameters."
     `(,@(clear-forms track)
       ,@(when instrument
           `((when (> (sg g-playing) 0.5d0)
-              (loop while (> (seq-due s sc ,tb ,index) 0.5d0)
-                    do (let* ((e (ifloor (seq-offset s sc ,tb ,index)))
+              ;; a launch ends what the track was playing
+              (when (> (session-launch s ,tb) 0.5d0)
+                ,@(release-forms instrument))
+              (session-wrap s sc ,tb ,index)
+              (loop while (> (session-due s sc ,tb ,index) 0.5d0)
+                    do (let* ((e (ifloor (session-event s sc ,tb ,index)))
                               (pitch (aref sc (+ e 2)))
                               (vel (aref sc (+ e 3)))
                               (gate (aref sc (+ e 1))))
                          ,(note-on-form instrument)
-                         (seq-note s sc ,tb ,index))))
+                         (setf (aref s ,(+ tb tr-sidx)) (+ (aref s ,(+ tb tr-sidx)) 1d0))))
+              (when (< (aref s ,(+ tb tr-mode)) 0.5d0)
+                (loop while (> (seq-due s sc ,tb ,index) 0.5d0)
+                      do (let* ((e (ifloor (seq-offset s sc ,tb ,index)))
+                                (pitch (aref sc (+ e 2)))
+                                (vel (aref sc (+ e 3)))
+                                (gate (aref sc (+ e 1))))
+                           ,(note-on-form instrument)
+                           (seq-note s sc ,tb ,index)))))
             ,(instrument-run-form instrument bus)))
       ,@(mapcar (lambda (d) (device-run-form d bus placed)) (getf track :devices))
       (track-out s ,tb ,master-bus)
@@ -295,6 +419,11 @@ the state and parameter sizes after it as values."
                              when (eq (getf (getf track :instrument) :kind) :sampler)
                                collect `(sampler-chase s sc ,(getf (getf track :instrument) :state) ,i))
                      (setf (sg g-reseek) 0d0))
+                   (when (> (sg g-refind) 0.5d0)
+                     ,@(loop for track in tracks
+                             for i from 0
+                             collect `(session-seek s sc ,(getf track :state) ,i))
+                     (setf (sg g-refind) 0d0))
                    ,@(loop for track in tracks
                            for i from 0
                            append (track-frame-forms track i placed master-bus returns))
@@ -310,6 +439,19 @@ the state and parameter sizes after it as values."
                    (setf (aref ol f) (aref s ,(+ (getf master :state) tr-out-l)))
                    (setf (aref orr f) (aref s ,(+ (getf master :state) tr-out-r)))
                    (frame-step s))
+                 nil)
+               (engine-init (s)
+                 ;; each noise its own seed, by track: a seed taken from
+                 ;; where the state sits would change the sound whenever
+                 ;; the layout grew
+                 ,@(loop for track in tracks
+                         for i from 0
+                         for instrument = (getf track :instrument)
+                         for b = (getf instrument :state)
+                         when (eq (getf instrument :kind) :synth)
+                           collect `(setf (aref s ,(+ b sy-noise)) ,(float (+ 12345 (* 7919 i)) 1d0))
+                         when (eq (getf instrument :kind) :drums)
+                           collect `(setf (aref s ,(+ b dk-noise)) ,(float (+ 54321 (* 7919 i)) 1d0)))
                  nil)
                (engine-note (s p ti pitch vel gate)
                  (cond ,@(loop for track in tracks
@@ -354,10 +496,10 @@ a parameter or a note must not add to it.")
           do (setf h (logand #xffffffff (* 16777619 (logxor h (logand #xff (char-code c)))))))
     (format nil "~(~8,'0x~)" h)))
 
-(defstruct (engine (:constructor make-engine (frames tick state-size param-size placed)))
-  "A compiled plan: FRAMES runs it, STATE-SIZE and PARAM-SIZE are its
-arrays' lengths, PLACED its layout."
-  frames tick state-size param-size placed)
+(defstruct (engine (:constructor make-engine (frames tick init state-size param-size placed)))
+  "A compiled plan: FRAMES runs it, INIT seeds it, STATE-SIZE and
+PARAM-SIZE are its arrays' lengths, PLACED its layout."
+  frames tick init state-size param-size placed)
 
 (defun lisp-lambda-form (forms)
   "FORMS as one function that returns the engine's two entry points."
@@ -376,8 +518,9 @@ arrays' lengths, PLACED its layout."
       `(lambda ()
          (declare (optimize (speed 1) (safety 1) (debug 0) (compilation-speed 2)))
          (labels (,(clause 'engine-tick)
-                  ,(clause 'engine-frames))
-           (cons #'engine-frames #'engine-tick))))))
+                  ,(clause 'engine-frames)
+                  ,(clause 'engine-init))
+           (list #'engine-frames #'engine-tick #'engine-init))))))
 
 (defun lisp-engine (plan sr)
   "The renderer for PLAN at SR, built when it is new."
@@ -388,9 +531,9 @@ arrays' lengths, PLACED its layout."
             (when (>= (hash-table-count *lisp-engines*) *most-engines*)
               (clrhash *lisp-engines*))
             (incf (getf *builds* :lisp))
-            (let ((entry (funcall (compile nil (lisp-lambda-form forms)))))
+            (destructuring-bind (frames tick init) (funcall (compile nil (lisp-lambda-form forms)))
               (setf (gethash key *lisp-engines*)
-                    (make-engine (car entry) (cdr entry) state-size param-size placed))))))))
+                    (make-engine frames tick init state-size param-size placed))))))))
 
 (defparameter *worklet-class*
   "class TalaEngine extends AudioWorkletProcessor {
@@ -401,8 +544,12 @@ arrays' lengths, PLACED its layout."
     this.p = Float64Array.from(o.params);
     this.sc = Float64Array.from(o.score);
     this.pool = o.pool;
+    this.script = o.script || [];
+    this.si = 0;
+    this.frame = 0;
     this.quanta = 0;
     engineSetup(this.s, sampleRate);
+    engineInit(this.s);
     if (o.playing) transportStart(this.s, o.beat);
     else this.s[G_BEAT] = o.beat;
     this.port.onmessage = (e) => this.message(e.data);
@@ -415,26 +562,58 @@ arrays' lengths, PLACED its layout."
     case 'pool': this.pool = m.pool; break;
     case 'score':
       this.sc = Float64Array.from(m.score);
-      s[G_SEEK] = s[G_BEAT]; s[G_RESEEK] = 1;
+      s[G_SEEK] = s[G_BEAT]; s[G_RESEEK] = 1; s[G_REFIND] = 1;
       break;
     case 'play': transportStart(s, m.beat); break;
     case 'stop':
       transportStop(s);
-      for (let i = 0; i < TRACKS; i++) engineNoteOff(s, i, -1);
+      for (let i = 0; i < TRACKS; i++) { engineNoteOff(s, i, -1); sessionStop(s, TRACK_STATE[i]); }
       break;
     case 'seek': s[G_BEAT] = m.beat; s[G_SEEK] = m.beat; s[G_RESEEK] = 1; break;
     case 'note': engineNote(s, this.p, m.track, m.pitch, m.vel, -1); break;
     case 'noteoff': engineNoteOff(s, m.track, m.pitch); break;
+    case 'launch': sessionQueue(s, this.p, TRACK_STATE[m.track], m.row); break;
+    case 'arrange':
+      for (let i = 0; i < TRACKS; i++) {
+        if (m.track < 0 || m.track === i) { sessionArrange(s, TRACK_STATE[i]); engineNoteOff(s, i, -1); }
+      }
+      break;
     }
+  }
+  // what a script asks at frame F, as a message would: for tests that
+  // hold a performance to the server's render
+  render(out, n) {
+    let at = 0;
+    while (at < n) {
+      while (this.si < this.script.length && this.script[this.si][0] <= this.frame + at) {
+        const [, t, track, row] = this.script[this.si++];
+        this.message({ t, track, row });
+      }
+      const next = this.si < this.script.length ? Math.min(n, this.script[this.si][0] - this.frame) : n;
+      if (at === 0 && next === n) {
+        engineFrames(this.s, this.p, this.sc, this.pool, out[0], out[1] || out[0], n);
+      } else {
+        engineFrames(this.s, this.p, this.sc, this.pool, out[0].subarray(at, next),
+                     (out[1] || out[0]).subarray(at, next), next - at);
+      }
+      at = next;
+    }
+    this.frame += n;
   }
   process(inputs, outputs) {
     const out = outputs[0];
-    engineFrames(this.s, this.p, this.sc, this.pool, out[0], out[1] || out[0], out[0].length);
+    this.render(out, out[0].length);
     if (++this.quanta >= 12) {
       this.quanta = 0;
+      const s = this.s;
       const peaks = new Array(METERS.length);
-      for (let i = 0; i < METERS.length; i++) peaks[i] = this.s[METERS[i]];
-      this.port.postMessage({ beat: this.s[G_BEAT], playing: this.s[G_PLAYING] > 0.5, peaks });
+      for (let i = 0; i < METERS.length; i++) peaks[i] = s[METERS[i]];
+      const session = new Array(TRACKS);
+      for (let i = 0; i < TRACKS; i++) {
+        const b = TRACK_STATE[i];
+        session[i] = [s[b + TR_MODE], s[b + TR_SLOT], s[b + TR_QUEUED], s[b + TR_ORIGIN]];
+      }
+      this.port.postMessage({ beat: s[G_BEAT], clock: s[G_CLOCK], playing: s[G_PLAYING] > 0.5, peaks, session });
     }
     return true;
   }
@@ -469,8 +648,12 @@ used twice in a context: (values js processor-name)."
                        (terpri out))
                      (format out "const STATE_SIZE = ~d;~%const TRACKS = ~d;~%" state-size
                              (length (tracks-of-kind placed :midi)))
-                     (format out "const G_BEAT = ~d, G_PLAYING = ~d, G_SEEK = ~d, G_RESEEK = ~d;~%"
-                             g-beat g-playing g-seek g-reseek)
+                     (format out "const G_BEAT = ~d, G_PLAYING = ~d, G_SEEK = ~d, G_RESEEK = ~d, G_CLOCK = ~d, G_REFIND = ~d;~%"
+                             g-beat g-playing g-seek g-reseek g-clock g-refind)
+                     (format out "const TR_MODE = ~d, TR_SLOT = ~d, TR_QUEUED = ~d, TR_ORIGIN = ~d;~%"
+                             tr-mode tr-slot tr-queued tr-origin)
+                     (format out "const TRACK_STATE = [~{~d~^, ~}];~%"
+                             (mapcar (lambda (track) (getf track :state)) (tracks-of-kind placed :midi)))
                      (format out "const METERS = [~{~d~^, ~}];~%"
                              (mapcar (lambda (track) (+ (getf track :state) tr-peak)) placed))
                      (write-string *worklet-class* out)
@@ -489,8 +672,22 @@ used twice in a context: (values js processor-name)."
 (defparameter *empty-pool* (make-array 1 :element-type 'single-float :initial-element 0f0)
   "The pool of a song with no recorded sound.")
 
+(defun apply-script-event (s p placed event)
+  "EVENT, (frame kind track row), done to S as the worklet's message of
+that kind would do it: :launch row ROW on track TRACK (-1 stops it), or
+:arrange track TRACK back to its arrangement (-1 every track)."
+  (destructuring-bind (frame kind track &optional row) event
+    (declare (ignore frame))
+    (let ((tracks (tracks-of-kind placed :midi)))
+      (ecase kind
+        (:launch (session-queue s p (getf (nth track tracks) :state) (float row 1d0)))
+        (:arrange (loop for placed-track in tracks
+                        for i from 0
+                        when (or (< track 0) (= track i))
+                          do (session-arrange s (getf placed-track :state))))))))
+
 (defun render-plan (plan params score frames &key (sr 48000) (from 0d0) (block-size frames)
-                                                  (pool *empty-pool*))
+                                                  (pool *empty-pool*) script)
   "FRAMES frames of PLAN, from beat FROM, as two double buffers: left
 and right, what the worklet plays.  BLOCK-SIZE only proves that the
 frames do not depend on how they are asked for."
@@ -503,15 +700,24 @@ frames do not depend on how they are asked for."
          (run (engine-frames engine)))
     (with-audio-floats
       (engine-setup s (float sr 1d0))
+      (funcall (engine-init engine) s)
       (transport-start s (float from 1d0))
-      (if (>= block-size frames)
+      (if (and (>= block-size frames) (null script))
           (funcall run s p sc pool left right frames)
-          (let ((l (double-buffer block-size))
-                (r (double-buffer block-size)))
-            (loop for done from 0 by block-size
-                  while (< done frames)
-                  do (let ((n (min block-size (- frames done))))
+          ;; in pieces: at most BLOCK-SIZE, and cut where SCRIPT acts,
+          ;; as the worklet cuts its quanta
+          (let ((events (sort (copy-list script) #'< :key #'first))
+                (done 0))
+            (loop while (< done frames)
+                  do (loop while (and events (<= (first (first events)) done))
+                           do (apply-script-event s p (engine-placed engine) (pop events)))
+                     (let* ((stop (min frames (+ done block-size)
+                                       (if events (max (1+ done) (first (first events))) frames)))
+                            (n (- stop done))
+                            (l (double-buffer n))
+                            (r (double-buffer n)))
                        (funcall run s p sc pool l r n)
-                       (replace left l :start1 done :end2 n)
-                       (replace right r :start1 done :end2 n))))))
+                       (replace left l :start1 done)
+                       (replace right r :start1 done)
+                       (setf done stop))))))
     (values left right)))

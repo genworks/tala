@@ -100,7 +100,8 @@ function revealFor(target) {
       renderDetail();
     }
   }
-  if (target === 'mixer') T.setView('mixer');
+  if (target === 'mixer' || target === 'view:mixer') T.setView('mixer');
+  if (target === 'session' || target === 'view:session' || /^(slot|launch|scene|session):|^stop-all$|^quantize$|^add-scene$/.test(target)) T.setView('session');
   if (target === 'arrangement') T.setView('arrangement');
 }
 
@@ -130,6 +131,16 @@ T.doUi = function doUi(actions) {
   for (const action of actions) {
     if (action.kind === 'point') {
       pointAt(action.target, action.say, index++);
+    } else if (action.kind === 'launch') {
+      T.setView('session');
+      T.launch(action.track, action.row);
+    } else if (action.kind === 'scene') {
+      T.setView('session');
+      T.launchScene(action.row);
+    } else if (action.kind === 'stop') {
+      T.stopClips(action.track);
+    } else if (action.kind === 'arrange') {
+      T.backToArrangement(action.track);
     } else if (action.kind === 'show') {
       if (action.view === 'arrangement' || action.view === 'mixer') T.setView(action.view);
       else {
