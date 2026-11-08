@@ -197,11 +197,42 @@ function deviceCard(track, device) {
   el('div', { class: 'device-body' }, deviceBody(track, device)));
 }
 
+// Where an audio track records from: the page's input device, a channel
+// of it, and whether to hear it through Tala as it comes.
+function inputCard(track) {
+  const which = T.inputChannel[track.id] || 'left';
+  const ctx = engine.ctx;
+  const late = ctx ? Math.round(((ctx.outputLatency || 0) + (ctx.baseLatency || 0) + (T.input.latency || 0)) * 1000) : null;
+  return el('div', { class: 'device', 'data-ctl': `input:${track.name}` },
+    el('div', { class: 'device-head', 'data-title': 'Input',
+                'data-doc': 'Where this track records from when it is armed and Rec is on.' },
+      el('span', { class: 'name' }, 'Input')),
+    el('div', { class: 'device-body input-body' },
+      T.input.source
+        ? el('select', { 'data-title': 'Input device', 'data-doc': 'The microphone or interface to record from.',
+                         onchange: (e) => T.openInput(e.target.value).catch((err) => status(err.message)) },
+            T.input.devices.map((dev, i) => el('option', { value: dev.deviceId, selected: dev.deviceId === T.input.deviceId },
+              dev.label || `Input ${i + 1}`)))
+        : el('button', { 'data-ctl': 'allow-input', 'data-title': 'Allow input',
+                         'data-doc': 'The browser asks once whether this page may use your microphone or interface.',
+                         onclick: () => T.openInput().catch((err) => status(`No input: ${err.message}`)) }, 'Allow input'),
+      el('select', { 'data-title': 'Channel',
+                     'data-doc': 'Which of the input\'s channels this track records. Most microphones are channel 1.',
+                     onchange: (e) => { T.inputChannel[track.id] = e.target.value; } },
+        [['left', 'Channel 1'], ['right', 'Channel 2'], ['stereo', 'Stereo (1 and 2)']].map(([value, label]) =>
+          el('option', { value, selected: value === which }, label))),
+      el('label', { 'data-title': 'Monitor',
+                    'data-doc': 'Hear the input through Tala as it comes. The browser adds a delay you may hear; monitoring from the interface itself has none.' },
+        el('input', { type: 'checkbox', checked: T.monitor, onchange: (e) => T.setMonitor(e.target.checked) }), ' Monitor'),
+      late === null ? null : el('span', { class: 'turn-note' }, `Takes are moved ${late} ms earlier, what you hear late by.`)));
+}
+
 function renderDevices(track) {
   const devices = [track.instrument, ...track.devices].filter(Boolean);
   const body = $('#detail-body');
   const left = body.scrollLeft;
   body.replaceChildren(el('div', { class: 'chain' },
+    audible(track) ? inputCard(track) : null,
     devices.map((d) => deviceCard(track, d)),
     el('div', { class: 'hint' }, track.devices.length ? '' : 'Click an effect in the browser to add it here.')));
   body.scrollLeft = left;

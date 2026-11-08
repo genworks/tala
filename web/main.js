@@ -457,6 +457,60 @@ T.recordTest = async function recordTest() {
   return { ok: failed.length === 0, failed, checks, notes: clip && clip.notes };
 };
 
+// An audio take from Chromium's pretend microphone: kept as a sample and
+// placed; then a take over a loop, of which the last pass is kept.  It
+// clears the song.
+T.audioRecordTest = async function audioRecordTest() {
+  const checks = {};
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const until = async (test, ms = 15000) => {
+    for (let waited = 0; waited < ms && !test(); waited += 10) await wait(10);
+    return test();
+  };
+  await T.send(form('clear-song'));
+  await T.send(form('set-tempo', 120), form('set-loop', 0, 16), form('add-track', 'Voice', kw('instrument'), kw('sampler')));
+  await T.synced;
+  const voice = T.song.tracks[0];
+  T.trackId = voice.id;
+  T.armed.clear();
+  T.armed.add(voice.id);
+  T.detail = 'devices';
+  renderDetail();
+  checks.inputCard = Boolean(document.querySelector(`[data-ctl="input:Voice"]`));
+  await T.openInput();
+  checks.inputOpen = Boolean(T.input.source) && T.input.devices.length > 0;
+  T.startBeat = 0;
+  await T.record();
+  await until(() => T.beat >= 4);
+  await T.record();
+  T.stop();
+  await chain;
+  const sample = T.song.samples[0];
+  const clip = T.song.tracks[0].clips[0];
+  checks.kept = Boolean(sample) && sample.seconds > 1.7 && sample.seconds < 2.6;
+  checks.placed = Boolean(clip) && clip.sample === sample.id && clip.start >= 0 && clip.start < 0.25;
+  await T.synced;
+  let peak = 0;
+  for (let i = 0; i < sample.frames; i++) peak = Math.max(peak, Math.abs(T.pool[sample.left + i]));
+  checks.heardSomething = peak > 0.01;
+  // over a loop of two beats, a little more than two passes: the last is kept
+  await T.send(form('set-loop', 0, 2));
+  await T.record();
+  const began = T.clock;
+  await until(() => T.clock >= began + 5);
+  await T.record();
+  T.stop();
+  await chain;
+  const second = T.song.samples[1];
+  const secondClip = T.song.tracks[0].clips.find((c) => c.sample === (second && second.id));
+  checks.lastPassKept = Boolean(second) && second.seconds < 1.05 && second.seconds > 0.2;
+  checks.lastPassAtLoopStart = Boolean(secondClip) && secondClip.start < 0.25;
+  checks.parity = (await T.selfTest(48000 * 2)).ok;
+  const failed = Object.entries(checks).filter(([, v]) => !v).map(([k]) => k);
+  return { ok: failed.length === 0, failed, checks, first: sample && sample.seconds, second: second && second.seconds,
+           clip: clip && [clip.start, clip.offset], latency: T.input.latency };
+};
+
 async function start() {
   const query = new URLSearchParams(location.search);
   T.session = query.get('s') || (() => {

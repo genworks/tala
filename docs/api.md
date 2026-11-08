@@ -222,6 +222,13 @@ and sends as any track does.
   in semitones changes pitch and speed together.
 - `(set-clip track clip &key offset gain transpose ...)` changes them.
 
+The person can also record onto an armed audio track from the page, from
+a microphone or interface chosen on the track's device panel.  Recording
+is the page's, not yours: a take arrives as a new sample named for the
+track ("Voice take 1") and a clip placed where it was played, already
+moved earlier by the delay the browser adds.  Over a loop, the last pass
+is the one kept.  From there it is a sample like any other.
+
 ### Repairing a recording
 
 A phone's voice memo usually wants cleaning before it sits in a mix.

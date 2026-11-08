@@ -569,6 +569,13 @@ PARAM-SIZE are its arrays' lengths, PLACED its layout."
     this.pool = o.pool;
     this.script = o.script || [];
     this.si = 0;
+    // a recording's input, kept in batches with the beat each quantum began at
+    this.capturing = false;
+    this.monitor = false;
+    this.capLeft = new Float32Array(4096);
+    this.capRight = new Float32Array(4096);
+    this.capBeats = [];
+    this.capN = 0;
     this.frame = 0;
     this.quanta = 0;
     engineSetup(this.s, sampleRate);
@@ -602,6 +609,11 @@ PARAM-SIZE are its arrays' lengths, PLACED its layout."
       if (m.rec) this.port.postMessage({ rec: 'off', track: m.track, pitch: m.pitch, beat: s[G_BEAT] });
       break;
     case 'launch': sessionQueue(s, this.p, TRACK_STATE[m.track], m.row); break;
+    case 'capture':
+      if (m.on) { this.capturing = true; this.capN = 0; this.capBeats = []; }
+      else { this.flushCapture(true); this.capturing = false; }
+      break;
+    case 'monitor': this.monitor = m.on; break;
     case 'arrange':
       for (let i = 0; i < TRACKS; i++) {
         if (m.track < 0 || m.track === i) { sessionArrange(s, TRACK_STATE[i]); engineNoteOff(s, i, -1); }
@@ -629,9 +641,34 @@ PARAM-SIZE are its arrays' lengths, PLACED its layout."
     }
     this.frame += n;
   }
+  flushCapture(last) {
+    this.port.postMessage({ cap: true, last, quantum: 128, beats: Float64Array.from(this.capBeats),
+                            left: this.capLeft.slice(0, this.capN), right: this.capRight.slice(0, this.capN) });
+    this.capN = 0;
+    this.capBeats = [];
+  }
   process(inputs, outputs) {
     const out = outputs[0];
-    this.render(out, out[0].length);
+    const n = out[0].length;
+    const beat = this.s[G_BEAT];
+    this.render(out, n);
+    const input = inputs[0] || [];
+    const inLeft = input[0];
+    const inRight = input[1] || input[0];
+    // monitoring: the input heard as it comes, dry, after the song
+    if (this.monitor && inLeft) {
+      const right = out[1] || out[0];
+      for (let i = 0; i < n; i++) { out[0][i] += inLeft[i]; if (right !== out[0]) right[i] += inRight[i]; }
+    }
+    if (this.capturing) {
+      this.capBeats.push(beat);
+      for (let i = 0; i < n; i++) {
+        this.capLeft[this.capN + i] = inLeft ? inLeft[i] : 0;
+        this.capRight[this.capN + i] = inRight ? inRight[i] : 0;
+      }
+      this.capN += n;
+      if (this.capN + n > this.capLeft.length) this.flushCapture(false);
+    }
     if (++this.quanta >= 12) {
       this.quanta = 0;
       const s = this.s;

@@ -191,9 +191,11 @@ function trackButtons(track) {
   return el('div', { class: 'track-buttons' },
     track.kind === 'master' ? null : toggle('mute', 'M', 'mute'),
     track.kind === 'midi' ? toggle('solo', 'S', 'solo') : null,
-    playable(track) ? el('button', {
+    track.kind === 'midi' && track.instrument ? el('button', {
       class: 'arm' + (T.armed.has(track.id) ? ' on' : ''), 'data-ctl': `track:${track.name}:arm`,
-      'data-title': 'Arm', 'data-doc': 'Armed tracks hear the keyboard and record what is played when Rec is on.',
+      'data-title': 'Arm', 'data-doc': audible(track)
+        ? 'An armed audio track records its input (chosen on its device panel) when Rec is on.'
+        : 'Armed tracks hear the keyboard and record what is played when Rec is on.',
       onclick: (e) => {
         e.stopPropagation();
         if (T.armed.has(track.id)) T.armed.delete(track.id); else T.armed.add(track.id);

@@ -27,6 +27,8 @@ const chrome = spawn(bin, ['--headless=new', '--no-sandbox', '--hide-scrollbars'
   '--autoplay-policy=no-user-gesture-required', '--remote-debugging-port=0',
   // AudioWorklet exists only in a secure context: https, localhost, or this
   `--unsafely-treat-insecure-origin-as-secure=${new URL(url).origin}`,
+  // a pretend microphone, allowed without asking, for the recording test
+  '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream',
   '--window-size=1500,950', `--user-data-dir=${profile}`, 'about:blank'], { stdio: 'ignore' });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

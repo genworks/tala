@@ -24,7 +24,8 @@ then browse `/tala/` on that image's HTTP port.  The audio engine is an
 AudioWorklet, which browsers offer only in a secure context, so use
 `localhost` or `https`.
 
-Space plays, F9 records what the armed tracks are played, Tab switches
+Space plays, F9 records what the armed tracks are played (an armed
+audio track records its input, picked on its device panel), Tab switches
 between the arrangement and the session, M turns
 the computer's keys into a keyboard, and a MIDI keyboard is picked up if
 the browser offers one.  Double-click a lane for a clip and a clip for
@@ -131,8 +132,8 @@ the other half.
 
 ## Not built yet
 
-Recording audio from a microphone or interface, and recording into a
-session slot (MIDI records into the arrangement); follow actions; tempo
+Recording into a session slot (takes go into the arrangement); takes
+stacked as comps; follow actions; tempo
 per scene; stretching audio to the tempo; samples on drum
 pads; saved songs that carry their audio; tempo changes along the song;
 plugin hosting.

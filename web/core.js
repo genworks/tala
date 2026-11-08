@@ -248,7 +248,7 @@ async function syncOnce() {
     engine.loaded.add(song.processor);
   }
   const node = new AudioWorkletNode(engine.ctx, song.processor, {
-    numberOfInputs: 0, outputChannelCount: [2],
+    numberOfInputs: 1, channelCount: 2, channelCountMode: 'explicit', outputChannelCount: [2],
     processorOptions: { params: engineParams(song), score: song.score, pool: T.pool, playing: T.playing, beat: T.beat },
   });
   node.port.onmessage = (e) => {
@@ -261,10 +261,48 @@ async function syncOnce() {
   }
   engine.node = node;
   engine.processor = song.processor;
+  // the input follows the engine to its new program
+  connectInput();
+  if (T.monitor) node.port.postMessage({ t: 'monitor', on: true });
 }
+
+// Audio input: one device for the page, a channel of it for each armed
+// audio track.  Browsers show device names only once one has been allowed.
+T.input = { stream: null, source: null, deviceId: null, devices: [], latency: 0 };
+T.inputChannel = {};
+T.monitor = false;
+
+T.openInput = async function openInput(deviceId) {
+  await startAudio();
+  if (T.input.stream) T.input.stream.getTracks().forEach((t) => t.stop());
+  const audio = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 2 };
+  if (deviceId) audio.deviceId = { exact: deviceId };
+  const stream = await navigator.mediaDevices.getUserMedia({ audio });
+  const settings = stream.getAudioTracks()[0].getSettings();
+  T.input.stream = stream;
+  T.input.deviceId = settings.deviceId;
+  T.input.latency = settings.latency || 0;
+  T.input.devices = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput');
+  if (T.input.source) T.input.source.disconnect();
+  T.input.source = engine.ctx.createMediaStreamSource(stream);
+  connectInput();
+  renderDetail();
+};
+
+function connectInput() {
+  if (!T.input.source || !engine.node) return;
+  try { T.input.source.disconnect(); } catch (e) { /* not yet connected */ }
+  T.input.source.connect(engine.node);
+}
+
+T.setMonitor = function setMonitor(on) {
+  T.monitor = on;
+  if (engine.node) engine.node.port.postMessage({ t: 'monitor', on });
+};
 
 function heardFromEngine(message) {
   if (message.rec) { takeNote(message); return; }
+  if (message.cap) { takeAudio(message); return; }
   if (T.playing) T.beat = message.beat;
   T.peaks = message.peaks;
   T.clock = message.clock;
@@ -311,23 +349,44 @@ T.recording = false;
 let take = null;
 
 const playable = (track) => track && track.instrument && track.instrument.kind !== 'sampler';
+const audible = (track) => track && track.instrument && track.instrument.kind === 'sampler';
+const armedTracks = () => T.song.tracks.filter((t) => T.armed.has(t.id) && t.instrument);
 
 T.record = async function record() {
-  if (T.recording) { finishTake(); renderTransport(); renderArrangement(); return; }
-  if (![...T.armed].some((id) => playable(T.song.tracks.find((t) => t.id === id)))) {
+  if (T.recording) { await finishTake(); renderTransport(); renderArrangement(); return; }
+  if (!armedTracks().length) {
     const selected = T.song.tracks.find((t) => t.id === T.trackId);
-    if (!playable(selected)) {
-      status('Arm a synth or drum track first: its ● button.');
+    if (!selected || !selected.instrument) {
+      status('Arm a track first: its ● button.');
       return;
     }
     T.armed.add(selected.id);
   }
-  take = { held: new Map(), notes: new Map() };
+  const audioTracks = armedTracks().filter(audible);
+  if (audioTracks.length && !T.input.source) {
+    try { await T.openInput(T.input.deviceId); } catch (e) {
+      status(`No input to record from: ${e.message}`);
+      return;
+    }
+  }
+  take = { held: new Map(), notes: new Map(), audio: audioTracks.length ? { chunks: [], tracks: audioTracks.map((t) => t.id) } : null };
   T.recording = true;
   if (!T.playing) await T.play();
+  if (take.audio) engine.node.port.postMessage({ t: 'capture', on: true });
   renderTransport();
   renderArrangement();
 };
+
+// The input's batches, as the engine sends them; the last says so.
+let captureDone = null;
+
+function takeAudio(m) {
+  if (take && take.audio) take.audio.chunks.push(m);
+  else if (finishing) finishing.chunks.push(m);
+  if (m.last && captureDone) { captureDone(); captureDone = null; }
+}
+
+let finishing = null;
 
 // A player plays to what they hear, and they hear each beat the output's
 // latency after the engine reached it: a take is moved earlier by that
@@ -360,7 +419,7 @@ function keepNote(track, pitch, held, end) {
   take.notes.get(track).push([pitch, +held.start.toFixed(4), Math.max(0.01, +length.toFixed(4)), held.vel]);
 }
 
-function finishTake() {
+async function finishTake() {
   if (!take) return;
   for (const [key, held] of take.held) {
     const [track, pitch] = key.split(':').map(Number);
@@ -372,6 +431,71 @@ function finishTake() {
   for (const [track, notes] of done.notes) {
     const name = T.song.tracks[track] && T.song.tracks[track].name;
     if (name && notes.length) T.send(form('record-notes', name, notes));
+  }
+  if (done.audio && engine.node) {
+    // the engine's last batch comes after this; wait for it
+    finishing = done.audio;
+    const last = new Promise((resolve) => { captureDone = resolve; });
+    engine.node.port.postMessage({ t: 'capture', on: false });
+    await Promise.race([last, new Promise((r) => setTimeout(r, 2000))]);
+    finishing = null;
+    await keepAudio(done.audio);
+  }
+}
+
+let takes = 0;
+
+// A recorded take: the captured frames, split where the loop wrapped, the
+// last pass kept, moved earlier by what the player heard late, uploaded as
+// a sample and put on each armed audio track.
+async function keepAudio(audio) {
+  const chunks = audio.chunks;
+  const total = chunks.reduce((n, c) => n + c.left.length, 0);
+  if (!total) return;
+  const left = new Float32Array(total);
+  const right = new Float32Array(total);
+  const beats = [];
+  let at = 0;
+  for (const c of chunks) {
+    left.set(c.left, at);
+    right.set(c.right, at);
+    at += c.left.length;
+    for (const b of c.beats) beats.push(b);
+  }
+  const song = T.song;
+  const Q = 128;
+  const bpf = song.tempo / 60 / 48000;
+  // where each pass begins: the frame at which the loop's end was reached
+  let from = 0;
+  let start = beats[0];
+  for (let q = 0; q + 1 < beats.length; q++) {
+    if (beats[q + 1] < beats[q] - 1e-9) {
+      from = q * Q + Math.min(Q, Math.ceil((song.loopEnd - beats[q]) / bpf));
+      start = song.loopStart;
+    }
+  }
+  const ctx = engine.ctx;
+  const late = ((ctx.outputLatency || 0) + (ctx.baseLatency || 0) + (T.input.latency || 0)) * song.tempo / 60;
+  let beat = start - late;
+  let offset = 0;
+  if (beat < 0) { offset = -beat * 60 / song.tempo; beat = 0; }
+  takes += 1;
+  for (const id of audio.tracks) {
+    const track = T.song.tracks.find((t) => t.id === id);
+    if (!track) continue;
+    const which = T.inputChannel[id] || 'left';
+    const frames = total - from;
+    const channels = which === 'stereo' ? 2 : 1;
+    const data = new Float32Array(frames * channels);
+    if (which === 'right') data.set(right.subarray(from));
+    else data.set(left.subarray(from));
+    if (channels === 2) data.set(right.subarray(from), frames);
+    try {
+      const name = await T.uploadSample(`${track.name} take ${takes}`, channels, data);
+      await T.send(form('add-audio-clip', track.name, name, kw('start'), +beat.toFixed(4), kw('offset'), +offset.toFixed(4)));
+    } catch (e) {
+      status(`The take could not be kept: ${e.message}`);
+    }
   }
 }
 
