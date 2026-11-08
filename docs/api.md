@@ -216,6 +216,35 @@ and sends as any track does.
   in semitones changes pitch and speed together.
 - `(set-clip track clip &key offset gain transpose ...)` changes them.
 
+### Repairing a recording
+
+A phone's voice memo usually wants cleaning before it sits in a mix.
+Each repair makes new sound for the sample, and every clip using it
+plays the repair; undo brings the original back.  With `:as "name"` the
+repair becomes a new sample beside the original instead.  Each answers
+what it did, in numbers.
+
+- `(denoise-sample sample &key reduction sensitivity noise as)` — turns
+  down steady background noise (hiss, room tone, a fan, traffic) by up
+  to `:reduction` dB (12 by default, 1 to 40), learned from the gaps
+  between phrases, or from `:noise ((start end)...)` seconds.  It answers
+  the noise and the speech level before and after.  10 to 15 dB is
+  usually clean and natural; past 20 the voice can turn watery.
+- `(dehum-sample sample &key frequency harmonics as)` — takes out mains
+  hum, 50 or 60 Hz and its harmonics; `:frequency :auto` (the default)
+  finds which, and says when there is none.
+- `(trim-sample sample &key threshold pad as)` — cuts the silence before
+  the first sound and after the last; clips keep their sound where it
+  was in the song.
+- `(normalize-sample sample &key peak as)` — scales the loudest moment to
+  `:peak` dB, -1 by default.
+- `(gain-sample sample db &key as)`.
+
+A sensible order for a voice memo: `dehum-sample` if there is hum, then
+`denoise-sample`, then `trim-sample`, then `normalize-sample`.  Check
+with `(hear :track ...)`: the noise between phrases should drop and the
+voice stay as loud.
+
 **You cannot tell what a sample says.**  You see its name, its phrases
 and, with `hear`, its shape; the words only if someone gave them.  Do not
 guess.  When the words matter, ask the person, and keep their answer

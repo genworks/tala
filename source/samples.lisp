@@ -201,7 +201,12 @@ places to cut speech.  Loudness in 20 ms steps against the loudest."
               do (let ((x (float (aref data k) 1d0)))
                    (incf sum (* x x))))
         (setf (aref levels i) (sqrt (/ sum (max 1 (- end (* i step))))))))
-    (let* ((threshold (* 0.08d0 (reduce #'max levels :initial-value 0d0)))
+    ;; sound is what stands clearly above the recording's own floor (its
+    ;; quietest tenth), and not merely above silence: a phone in a noisy
+    ;; room never reaches silence
+    (let* ((floor (let ((sorted (sort (copy-seq levels) #'<)))
+                    (if (plusp steps) (aref sorted (floor steps 10)) 0d0)))
+           (threshold (max (* 3 floor) (* 0.01d0 (reduce #'max levels :initial-value 0d0))))
            (gap (ceiling (/ *phrase-gap* 0.02d0)))
            (phrases '())
            (start nil)

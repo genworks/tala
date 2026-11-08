@@ -223,7 +223,17 @@ async function loadModule(context, name) {
   await context.audioWorklet.addModule(`/tala/api/engine.js?name=${name}`);
 }
 
-async function syncEngine() {
+// One at a time, in order: a sync that gave way to a later one would
+// leave whoever awaited it (Play, a key) with no engine yet.  Each brings
+// the engine to the song as it is when its turn comes.
+function syncEngine() {
+  engine.syncing = (engine.syncing || Promise.resolve())
+    .then(syncOnce)
+    .catch((e) => status(`The audio engine did not start: ${e.message}`));
+  return engine.syncing;
+}
+
+async function syncOnce() {
   if (!engine.ctx) return;
   const song = T.song;
   if (song.processor === engine.processor && engine.node) {
@@ -233,12 +243,10 @@ async function syncEngine() {
   }
   // a new structure is a new program: the old one stops, the new one
   // takes up at the same place
-  const ticket = ++engine.ticket;
   if (!engine.loaded.has(song.processor)) {
     await loadModule(engine.ctx, song.processor);
     engine.loaded.add(song.processor);
   }
-  if (ticket !== engine.ticket) return;
   const node = new AudioWorkletNode(engine.ctx, song.processor, {
     numberOfInputs: 0, outputChannelCount: [2],
     processorOptions: { params: song.params, score: song.score, pool: T.pool, playing: T.playing, beat: T.beat },

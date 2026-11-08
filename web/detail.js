@@ -242,6 +242,43 @@ function renderDetail() {
   else renderDevices(track);
 }
 
+// Repairs for a recording: each makes new sound for the sample, which
+// every clip using it plays; undo brings the original back, or "Keep
+// the original" makes the repair a sample of its own.
+function repairRow(sample) {
+  const keep = el('input', { type: 'checkbox' });
+  const reduction = el('input', { type: 'number', min: 1, max: 40, step: 1, value: 12, style: 'width:52px' });
+  // the last repair's answer, kept: the song it changed redraws this row
+  const result = el('span', { class: 'turn-note' }, T.repairNote || '');
+  const run = async (button, op, ...args) => {
+    const as = keep.checked ? [kw('as'), `${sample.name} (${button.textContent.toLowerCase()})`] : [];
+    button.disabled = true;
+    result.textContent = 'Working...';
+    const answer = await T.send(form(op, sample.name, ...args, ...as));
+    const r = answer.results && answer.results[0];
+    T.repairNote = r ? (r.ok ? r.value : r.error) : '';
+    for (const note of document.querySelectorAll('.repair-row .turn-note')) note.textContent = T.repairNote;
+    status(T.repairNote);
+    button.disabled = false;
+  };
+  const tool = (label, doc, op, args = () => []) => {
+    const button = el('button', { 'data-title': label, 'data-doc': doc,
+                                  'data-ctl': `repair:${op}`, onclick: () => run(button, op, ...args()) }, label);
+    return button;
+  };
+  return el('div', { class: 'repair-row' },
+    el('b', {}, 'Repair'),
+    tool('De-hum', 'Take out mains hum: 50 or 60 Hz and its harmonics, found by itself.', 'dehum-sample'),
+    tool('De-noise', 'Turn down steady background noise (hiss, room, a fan), learned from the gaps between phrases, by up to the dB beside it. 10 to 15 sounds natural.',
+         'denoise-sample', () => [kw('reduction'), +reduction.value]),
+    el('label', { 'data-title': 'Reduction', 'data-doc': 'The most the noise is turned down, in dB.' }, reduction, ' dB'),
+    tool('Trim silence', 'Cut the quiet before the first sound and after the last. Clips keep their sound where it was.', 'trim-sample'),
+    tool('Normalize', 'Bring the loudest moment to -1 dB.', 'normalize-sample'),
+    el('label', { 'data-title': 'Keep the original', 'data-doc': 'Make the repair a new sample instead of changing this one.' },
+      keep, ' keep the original'),
+    result);
+}
+
 // An audio clip's whole sample, the part the clip plays lit, with a
 // handle at each end of it: the left one cuts or brings back the front,
 // the right one the end.
@@ -257,7 +294,7 @@ function renderAudioClip(clip) {
     sample && sample.missing ? ' — its audio is not on this server; import it again.' : '',
     sample && sample.words ? ` — "${sample.words}"` : '',
     sample ? ' — drag the bright part\'s edges to choose what the clip plays.' : '');
-  body.replaceChildren(info, canvas);
+  body.replaceChildren(info, sample && !sample.missing ? repairRow(sample) : '', canvas);
   if (!sample || sample.missing || T.pool.length < sample.left + sample.frames) return;
   const rate = Math.pow(2, clip.transpose / 12);
   const secondsPerBeat = 60 / T.song.tempo;

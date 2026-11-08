@@ -66,6 +66,13 @@ retuning audio rebuilds nothing and the two runtimes still agree to the
 last bit.  A song names its samples, so its file stays small and does
 not carry the audio.
 
+**Recordings can be repaired**, as a phone's voice memo usually needs:
+spectral noise reduction learned from the gaps between phrases, mains
+hum taken out at 50 or 60 Hz and its harmonics, silence trimmed, the
+level normalized (`source/repair.lisp`).  Each repair makes new sound for
+the sample offline, on the server; the song points at it, so undo is the
+song's own and both runtimes still read the same numbers.
+
 **The session keeps its own time.**  Launching a clip is a performance,
 not an edit: it goes straight to the audio thread, which starts the clip
 on the next boundary of the launch quantize by a clock that never jumps

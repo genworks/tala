@@ -218,10 +218,14 @@ T.selfTest = async function selfTest(frames = 48000, script = []) {
 T.uiTest = async function uiTest() {
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const checks = {};
+  // wait for what the engine reports, not for a time: a loaded machine is slow
+  const until = async (test, ms = 8000) => {
+    for (let waited = 0; waited < ms && !test(); waited += 50) await wait(50);
+    return test();
+  };
   await T.play(0);
-  await wait(1500);
-  checks.playheadMoved = T.beat > 1;
-  checks.metersMoved = Boolean(T.peaks) && Math.max(...T.peaks) > 0.001;
+  checks.playheadMoved = await until(() => T.beat > 1);
+  checks.metersMoved = await until(() => Boolean(T.peaks) && Math.max(...T.peaks) > 0.001);
   const processor = engine.processor;
   // a knob: live, then the form, and the same program goes on playing
   const bass = T.song.tracks.find((t) => t.name === 'Bass');
@@ -232,9 +236,8 @@ T.uiTest = async function uiTest() {
   // a device: a new program, playing on from where it was
   const before = T.beat;
   await T.send(form('add-device', 'Bass', kw('phaser')));
-  await wait(600);
-  checks.newProgram = engine.processor !== processor && engine.processor === T.song.processor;
-  checks.keptPlaying = T.playing && T.beat !== before;
+  checks.newProgram = await until(() => engine.processor !== processor && engine.processor === T.song.processor);
+  checks.keptPlaying = await until(() => T.playing && T.beat !== before);
   await T.send(form('delete-device', 'Bass', kw('phaser')));
   await T.send(form('set-device', 'Bass', kw('instrument'), kw('cutoff'), 170));
   T.stop();
@@ -337,6 +340,15 @@ T.sampleTest = async function sampleTest() {
   checks.waveformHandleTrims = Math.abs(shortened.length - (trimmed.length - 0.5)) < 0.02;
   const after = await T.selfTest(48000 * 4);
   checks.parityAfterTrims = after.ok;
+  // a repair from its button: the sample's sound changes, the clip plays it
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const stamp = T.song.poolStamp;
+  $('[data-ctl="repair:normalize-sample"]').click();
+  for (let i = 0; i < 100 && T.song.poolStamp === stamp; i++) await wait(50);
+  await T.synced;
+  checks.repairButton = T.song.poolStamp !== stamp && /:now -1/.test($('.repair-row .turn-note').textContent);
+  checks.parityAfterRepair = (await T.selfTest(48000 * 4)).ok;
+  renderDetail();
   checks.listed = Boolean(document.querySelector('[data-ctl="sample:Test voice"]'));
   const info = await T.send(form('sample-info', 'Test voice'));
   checks.phrases = /:phrases \(\(.*\) \(.*\) \(.*\)\)/.test(info.results[0].value);

@@ -724,6 +724,105 @@ the page, runs PERSON-FORMS between the model's two rounds."
               (kept (remove-if (lambda (b) (< b 1)) before)))
           (and (= (length after) (length kept)) (every #'= after kept)))))))
 
+(defun recording (seconds sound &optional (sr 48000))
+  "A mono recording SECONDS long whose sample at time T is (SOUND T)."
+  (let ((out (double-buffer (round (* seconds sr)))))
+    (dotimes (i (length out) out)
+      (setf (aref out i) (float (funcall sound (/ i (float sr 1d0))) 1d0)))))
+
+(defun voice-at (at)
+  "Three phrases of tone at 220 Hz, as speech-like has them."
+  (if (some (lambda (b) (<= (first b) at (second b))) '((0.1d0 0.5d0) (0.9d0 1.2d0) (1.6d0 1.9d0)))
+      (* 0.3d0 (sin (* 2 pi 220 at)))
+      0d0))
+
+(defun song-with-recording (channel)
+  "A song holding CHANNEL as the sample \"Memo\", on a clip from beat 0
+of an audio track at 120 BPM."
+  (let ((song (make-song)))
+    (let ((*song* song))
+      (import-sample! song "Memo" (channels-octets (list channel)) 1))
+    (forms-pass? song "(set-tempo 120) (add-track \"Speech\" :instrument :sampler) (add-audio-clip \"Speech\" \"Memo\")")
+    song))
+
+(defun memo-channel (song)
+  (first (pcm-channels-of (find-pcm (getf (first (getf (the-object song spec) :samples)) :stamp)))))
+
+(defun db-ratio (a b) (* 10 (log (/ (max a 1d-30) (max b 1d-30)) 10)))
+
+(defun test-repair ()
+  (let* ((seed 12345)
+         ;; the same hiss on every implementation
+         (hiss (lambda ()
+                 (setf seed (mod (* seed 16807) 2147483647))
+                 (- (* 2d0 (/ seed 2147483647d0)) 1d0)))
+         (noisy (song-with-recording
+                 (recording 2 (lambda (at) (+ (voice-at at) (* 0.01d0 (funcall hiss))))))))
+    (let ((report (let ((*song* noisy)) (with-double-floats (tala-api::denoise-sample "Memo")))))
+      (check "de-noise takes the hiss between the phrases down by most of the 12 dB asked"
+        (<= (getf report :noise-now) (- (getf report :noise-was) 8)))
+      (check "and leaves the voice within 1.5 dB"
+        (>= (getf report :sound-now) (- (getf report :sound-was) 1.5)))
+      (check "every clip plays the repair, and undo brings the original back"
+        (let ((after (getf (first (getf (the-object noisy spec) :samples)) :stamp)))
+          (forms-pass? noisy "(undo)")
+          (not (equal after (getf (first (getf (the-object noisy spec) :samples)) :stamp)))))))
+  (let* ((seed 777)
+         (hiss (lambda ()
+                 (setf seed (mod (* seed 16807) 2147483647))
+                 (- (* 2d0 (/ seed 2147483647d0)) 1d0)))
+         (loud (song-with-recording
+                (recording 2 (lambda (at) (+ (voice-at at) (* 0.05d0 (funcall hiss))))))))
+    (let ((report (let ((*song* loud)) (with-double-floats (tala-api::denoise-sample "Memo" :reduction 20)))))
+      (check "a loud room's noise is still found between the phrases"
+        (search "3 gaps" (getf report :learned-from)))
+      (check "and taken down by 12 dB or more when 20 are asked, the voice within 1.5 dB"
+        (and (<= (getf report :noise-now) (- (getf report :noise-was) 12))
+             (>= (getf report :sound-now) (- (getf report :sound-was) 1.5))))))
+  (let ((hum (song-with-recording
+              (recording 2 (lambda (at) (+ (voice-at at) (* 0.05d0 (sin (* 2 pi 60 at))) (* 0.02d0 (sin (* 2 pi 180 at)))))))))
+    (let* ((before (memo-channel hum))
+           (report (let ((*song* hum)) (tala-api::dehum-sample "Memo")))
+           (after (memo-channel hum)))
+      (check "de-hum finds 60 Hz by itself" (= 60 (getf report :frequency)))
+      (check "and takes the hum and its harmonic down by 20 dB or more"
+        (and (> (db-ratio (goertzel-power before 60 48000) (goertzel-power after 60 48000)) 20)
+             (> (db-ratio (goertzel-power before 180 48000) (goertzel-power after 180 48000)) 20)))
+      (check "and leaves the voice within 1 dB"
+        (< (abs (db-ratio (goertzel-power before 220 48000) (goertzel-power after 220 48000))) 1))))
+  (check "de-hum finds 50 Hz too"
+    (let ((hum (song-with-recording (recording 2 (lambda (at) (+ (voice-at at) (* 0.05d0 (sin (* 2 pi 50 at)))))))))
+      (= 50 (getf (let ((*song* hum)) (tala-api::dehum-sample "Memo")) :frequency))))
+  (check "and says so when there is no hum"
+    (search "no hum" (form-error (song-with-recording (recording 2 #'voice-at)) "(dehum-sample \"Memo\")")))
+  (let ((quiet (song-with-recording (recording 2 #'voice-at))))
+    (let ((*song* quiet)) (tala-api::normalize-sample "Memo"))
+    (check "normalize brings the peak to -1 dB"
+      (< (abs (- -1 (db-of (peak-of-channels (list (memo-channel quiet)))))) 0.05)))
+  (let* ((late (song-with-recording (recording 2.5 (lambda (at) (voice-at (- at 0.5d0))))))
+         (where (lambda (song)
+                  (let ((left (render-song song (* 3 48000))))
+                    (position-if (lambda (x) (> (abs x) 0.05d0)) left)))))
+    (let ((before (funcall where late)))
+      (let ((*song* late)) (tala-api::trim-sample "Memo"))
+      (check "trimming cuts the silence"
+        (< (getf (first (getf (the-object late spec) :samples)) :frames) (* 2.1 48000)))
+      (check "and the voice still lands where it did in the song"
+        (let ((after (funcall where late)))
+          (< (abs (- after before)) 48)))))
+  (let ((song (song-with-recording (recording 2 #'voice-at))))
+    (let* ((plan (the-object song plan))
+           (old (getf (first (getf (the-object song spec) :samples)) :stamp)))
+      (render-song song 480)
+      (let ((builds (copy-list *builds*)))
+        (forms-pass? song "(gain-sample \"Memo\" -6 :as \"Memo quieter\")")
+        (render-song song 480)
+        (check "a repair with :as keeps the original beside it"
+          (and (equal old (getf (first (getf (the-object song spec) :samples)) :stamp))
+               (string= "Memo quieter" (getf (second (getf (the-object song spec) :samples)) :name))))
+        (check "and repairs leave the plan and the program alone"
+          (and (equal plan (the-object song plan)) (equal builds *builds*)))))))
+
 (defun test-agent-survives-reload ()
   (check "a reload keeps where the agent was pointed"
     (let ((saved (sexp-agent:agent-messages-url *agent*)))
@@ -879,6 +978,7 @@ change: (record-golden).")
   (test-session)
   (test-sharing)
   (test-trimming)
+  (test-repair)
   (test-agent-survives-reload)
   (test-json)
   (test-reference)

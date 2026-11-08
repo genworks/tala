@@ -587,6 +587,107 @@ the model knows."
                   (put! spec :samples (remove s (getf spec :samples)))
                   (list :deleted (getf s :name))))))
 
+(defun keep-clips-in-place! (spec id shift)
+  "SPEC's clips of sample ID after SHIFT seconds were cut from its front:
+the sound each one plays stays where it was in the song."
+  (dolist (track (getf spec :tracks))
+    (dolist (c (getf track :clips))
+      (when (eql (getf c :sample) id)
+        (let* ((offset (getf c :offset 0))
+               (rate (expt 2d0 (/ (getf c :transpose 0) 12d0)))
+               ;; what was cut inside the clip, after its start in the sample
+               (late (max 0 (- shift offset)))
+               (beats (/ (* late (getf spec :tempo)) 60 rate)))
+          (put! c :offset (max 0 (- offset shift)))
+          (when (plusp beats)
+            (put! c :start (+ (getf c :start) beats))
+            (put! c :length (max 0.0625 (- (getf c :length) beats)))))))))
+
+(defun point-at-repair! (spec id as stamp frames channels shift)
+  "SPEC with sample ID's sound now STAMP, or a new sample named AS beside
+it: the name the repaired sound goes by."
+  (let ((s (find-sample spec id)))
+    (cond (as
+           (let ((taken (unique-sample-name spec as)))
+             (put! spec :samples
+                   (append (getf spec :samples)
+                           (list (list :id (next-id! spec) :name taken :stamp stamp
+                                       :frames frames :channels channels :words (getf s :words)))))
+             taken))
+          (t
+           (put! s :stamp stamp)
+           (put! s :frames frames)
+           (when (and shift (plusp shift))
+             (keep-clips-in-place! spec id shift))
+           (getf s :name)))))
+
+(defun repair-sample! (sample process &key as)
+  "PROCESS, a function of a sample's pcm and channels answering new
+channels, a report and how many seconds it cut from the front, made the
+sample's sound: in place, every clip using it then playing the repair
+and undo bringing the original back, or with AS a new sample of that
+name.  The work is done before the edit, which only points at it."
+  (let* ((song (song))
+         (found (find-sample (the-object song spec) sample))
+         (id (getf found :id))
+         (pcm (or (find-pcm (getf found :stamp))
+                  (error "The audio of ~s is not on this server; import it again." (getf found :name)))))
+    (multiple-value-bind (channels report shift) (funcall process pcm (pcm-channels-of pcm))
+      (multiple-value-bind (stamp frames) (store-pcm! (channels-octets channels) (length channels))
+        (let ((name (edit-song! song (lambda (spec)
+                                       (point-at-repair! spec id as stamp frames (length channels) shift)))))
+          (list* :sample name
+                 :seconds (/ (round (* 1000 (/ frames *sample-rate*))) 1000d0)
+                 report))))))
+
+(define-op normalize-sample (sample &key (peak -1) as)
+  "Scale a sample so its loudest moment is at PEAK dB.  With AS, the
+result is a new sample of that name and the original stays."
+  (repair-sample! sample (lambda (pcm channels)
+                           (declare (ignore pcm))
+                           (normalize-channels channels peak))
+                  :as as))
+
+(define-op gain-sample (sample db &key as)
+  "Turn a sample up or down by DB."
+  (unless (realp db)
+    (error "Gain is a number of dB, not ~s." db))
+  (repair-sample! sample (lambda (pcm channels)
+                           (declare (ignore pcm))
+                           (values (scale-channels channels (expt 10d0 (/ db 20))) (list :gain db)))
+                  :as as))
+
+(define-op trim-sample (sample &key (threshold -50) (pad 0.05) as)
+  "Cut the quiet before a sample's first sound and after its last, quiet
+being under THRESHOLD dB, keeping PAD seconds either side.  Clips using
+it keep their sound where it was in the song."
+  (repair-sample! sample (lambda (pcm channels)
+                           (declare (ignore pcm))
+                           (trim-channels channels *sample-rate* threshold pad))
+                  :as as))
+
+(define-op dehum-sample (sample &key (frequency :auto) (harmonics 8) as)
+  "Take mains hum out of a sample: FREQUENCY 50, 60 or :auto to find
+which, and its first HARMONICS multiples, each by a notch about 2 Hz
+wide.  Says so when there is no hum to take out."
+  (repair-sample! sample (lambda (pcm channels)
+                           (declare (ignore pcm))
+                           (dehum-channels channels *sample-rate* frequency harmonics))
+                  :as as))
+
+(define-op denoise-sample (sample &key (reduction 12) (sensitivity 1) noise as)
+  "Turn down a sample's steady background noise (hiss, room tone, a fan)
+by up to REDUCTION dB, learned from where nobody speaks: the gaps
+between its phrases, or NOISE, ((start end)...) in seconds, when given.
+SENSITIVITY above 1 takes more and risks a watery sound; below 1, less."
+  (unless (and (realp reduction) (<= 1 reduction 40))
+    (error "The reduction is a number of dB from 1 to 40, not ~s." reduction))
+  (unless (and (realp sensitivity) (<= 0.25 sensitivity 4))
+    (error "The sensitivity is a number from 0.25 to 4, not ~s." sensitivity))
+  (repair-sample! sample (lambda (pcm channels)
+                           (denoise-channels channels pcm *sample-rate* reduction sensitivity noise))
+                  :as as))
+
 (define-op add-clip (track &key name (start 0) (length 4) loop notes scene)
   "A clip on TRACK from beat START, LENGTH beats long.  With LOOP, its
 notes repeat every LOOP beats.  NOTES as in add-notes.  With SCENE it
