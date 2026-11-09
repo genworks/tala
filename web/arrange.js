@@ -23,19 +23,34 @@ function songBeats() {
 
 const snap = (beat, step = 1) => Math.max(0, Math.round(beat / step) * step);
 
+// A drag follows the pointer that began it, so a second finger does not
+// pull it away.  A touch the browser takes back, to scroll, puts things
+// where they were and commits nothing.
 function dragging(event, onMove, onUp) {
   event.preventDefault();
   event.stopPropagation();
   const x0 = event.clientX;
   const y0 = event.clientY;
-  const move = (e) => onMove(e.clientX - x0, e.clientY - y0, e);
-  const up = (e) => {
+  const id = event.pointerId;
+  const done = () => {
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
+    window.removeEventListener('pointercancel', cancel);
+  };
+  const move = (e) => { if (e.pointerId === id) onMove(e.clientX - x0, e.clientY - y0, e); };
+  const up = (e) => {
+    if (e.pointerId !== id) return;
+    done();
     if (onUp) onUp(e.clientX - x0, e.clientY - y0, e);
+  };
+  const cancel = (e) => {
+    if (e.pointerId !== id) return;
+    done();
+    onMove(0, 0, e);
   };
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
+  window.addEventListener('pointercancel', cancel);
 }
 
 function drawClipNotes(canvas, clip, color) {
@@ -87,17 +102,19 @@ function clipElement(track, clip) {
   if (clip.sample) drawWaveform(canvas, clip);
   else drawClipNotes(canvas, clip, color);
   const node = el('div', {
-    class: 'clip' + (clip.id === T.clipId ? ' selected' : ''),
+    // too narrow for a finger to tell its edges from its middle: it only moves
+    class: 'clip' + (clip.id === T.clipId ? ' selected' : '') + (width < 56 ? ' small' : ''),
     'data-ctl': `clip:${clip.id}`,
     'data-title': clip.name,
     'data-doc': 'Drag to move, drag the right edge to resize, double-click to edit its notes. Delete removes it; Ctrl+D copies it after itself.',
     style: `left:${clip.start * T.ppb}px;width:${width}px;background:${color}`,
-    ondblclick: (e) => {
+    ondouble: (e) => {
       e.stopPropagation();
       T.trackId = track.id;
       T.clipId = clip.id;
       T.detail = 'notes';
       renderAll();
+      T.showDetail();
     },
   }, el('span', { class: 'clip-title' }, clip.name), canvas,
   el('div', { class: 'clip-edge left', 'data-title': 'Clip start',
@@ -126,7 +143,11 @@ function clipElement(track, clip) {
     });
   } }));
   node.addEventListener('pointerdown', (e) => {
+    // A finger moves a clip only once it is selected, so a swipe that
+    // begins on a clip still scrolls the song.
+    const held = clip.id === T.clipId;
     selectClip(track, clip);
+    if (e.pointerType === 'touch' && !held) return;
     const start = clip.start;
     dragging(e, (dx) => {
       node.style.left = `${snap(start + dx / T.ppb) * T.ppb}px`;
@@ -183,7 +204,7 @@ function trackButtons(track) {
     'data-doc': 'The track\'s fader, in dB. Double-click for 0 dB.',
     oninput: (e) => setLive(track.param, +e.target.value),
     onchange: (e) => T.send(form('set-track', track.name, kw('gain'), +e.target.value)),
-    ondblclick: () => T.send(form('set-track', track.name, kw('gain'), 0)),
+    ondouble: () => T.send(form('set-track', track.name, kw('gain'), 0)),
     onclick: (e) => e.stopPropagation(),
   });
   return el('div', { class: 'track-buttons' },
@@ -200,7 +221,8 @@ function trackButtons(track) {
         renderArrangement();
       },
     }, '●') : null,
-    el('button', { class: T.autoOpen[track.id] ? 'on' : '', 'data-title': 'Automation',
+    el('button', { class: T.autoOpen[track.id] ? 'on' : '', 'data-ctl': `track:${track.name}:automation`,
+                   'data-title': 'Automation',
                    'data-doc': 'Show a lane to draw how a control moves over time.',
                    onclick: (e) => { e.stopPropagation(); toggleLane(track); } }, 'A'),
     gain);
@@ -212,15 +234,17 @@ function toggleLane(track) {
   renderArrangement();
 }
 
+function renameTrack(track) {
+  if (track.kind === 'master') return;
+  const name = window.prompt('Track name', track.name);
+  if (name && name !== track.name) T.send(form('rename-track', track.name, name));
+}
+
 function trackHead(track) {
   return el('div', {
     class: 'track-head', 'data-ctl': `track:${track.name}`,
     onclick: () => { T.trackId = track.id; T.detail = 'devices'; renderSelection(); renderDetail(); },
-    ondblclick: () => {
-      if (track.kind === 'master') return;
-      const name = window.prompt('Track name', track.name);
-      if (name && name !== track.name) T.send(form('rename-track', track.name, name));
-    },
+    ondouble: () => renameTrack(track),
   },
   el('div', { class: 'track-color', style: `background:${COLORS[track.color % 12]}` }),
   el('div', { class: 'track-name' }, track.name),
@@ -269,54 +293,72 @@ function automationRow(track, width) {
       ? form('set-automation', track.name, ref, kw(open.param), points)
       : form('clear-automation', track.name, ref, kw(open.param)));
   };
-  const draw = () => {
-    svg.replaceChildren();
+  const make = (tag, attrs) => {
+    const node = document.createElementNS(svg.namespaceURI, tag);
+    for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+    return node;
+  };
+  const line = make('polyline', { fill: 'none', stroke: COLORS[track.color % 12], 'stroke-width': 1.5 });
+  // The nodes stay through a drag and only move: a finger's drag belongs
+  // to the node it began on.
+  let marks = [];
+  const place = () => {
+    const coords = points.map(([b, v]) => `${b * T.ppb},${toY(v)}`);
     if (points.length) {
-      const line = document.createElementNS(svg.namespaceURI, 'polyline');
-      const coords = points.map(([b, v]) => `${b * T.ppb},${toY(v)}`);
       coords.unshift(`0,${toY(points[0][1])}`);
       coords.push(`${width},${toY(points[points.length - 1][1])}`);
-      line.setAttribute('points', coords.join(' '));
-      line.setAttribute('fill', 'none');
-      line.setAttribute('stroke', COLORS[track.color % 12]);
-      line.setAttribute('stroke-width', '1.5');
-      svg.append(line);
     }
-    points.forEach((point, i) => {
-      const dot = document.createElementNS(svg.namespaceURI, 'circle');
-      dot.setAttribute('cx', point[0] * T.ppb);
-      dot.setAttribute('cy', toY(point[1]));
-      dot.setAttribute('r', 4);
-      dot.setAttribute('fill', '#dfe2ea');
-      dot.style.cursor = 'grab';
-      dot.addEventListener('pointerdown', (e) => {
+    line.setAttribute('points', coords.join(' '));
+    points.forEach(([b, v], i) => marks[i].forEach((node) => {
+      node.setAttribute('cx', b * T.ppb);
+      node.setAttribute('cy', toY(v));
+    }));
+  };
+  let tapped = 0;
+  // A point is a dot and, for a finger, a wider ring around it.  A
+  // finger's tap on a point removes it; a mouse double-clicks.
+  marks = points.map((point, i) => {
+    const pair = [make('circle', { r: 14, fill: 'transparent', class: 'ring' }),
+                  make('circle', { r: 4, fill: '#dfe2ea' })];
+    for (const node of pair) {
+      node.style.cursor = 'grab';
+      node.addEventListener('pointerdown', (e) => {
         const [b0, v0] = point;
         const y0 = toY(v0);
         dragging(e, (dx, dy) => {
           point[0] = snap(b0 + dx / T.ppb, 0.25);
           point[1] = fromY(Math.min(height, Math.max(0, y0 + dy)));
-          draw();
-        }, () => { points.sort((a, b) => a[0] - b[0]); commit(); });
+          place();
+        }, (dx, dy) => {
+          tapped = performance.now();
+          if (e.pointerType === 'touch' && Math.hypot(dx, dy) < 6) points.splice(i, 1);
+          else points.sort((a, b) => a[0] - b[0]);
+          commit();
+        });
       });
-      dot.addEventListener('dblclick', (e) => {
+      node.addEventListener('double', (e) => {
         e.stopPropagation();
         points.splice(i, 1);
         commit();
       });
-      svg.append(dot);
-    });
+    }
+    return pair;
+  });
+  svg.append(line, ...marks.map((pair) => pair[0]), ...marks.map((pair) => pair[1]));
+  place();
+  const add = (e) => {
+    if (e.target.tagName === 'circle') return;
+    const box = laneNode.getBoundingClientRect();
+    points.push([snap((e.clientX - box.left) / T.ppb, 0.25), fromY(e.clientY - box.top)]);
+    points.sort((a, b) => a[0] - b[0]);
+    commit();
   };
-  draw();
   const laneNode = el('div', {
     class: 'lane auto-lane', style: `width:${width}px`,
-    'data-title': 'Automation', 'data-doc': 'Double-click to add a point, drag to move it, double-click a point to remove it.',
-    ondblclick: (e) => {
-      if (e.target.tagName === 'circle') return;
-      const box = laneNode.getBoundingClientRect();
-      points.push([snap((e.clientX - box.left) / T.ppb, 0.25), fromY(e.clientY - box.top)]);
-      points.sort((a, b) => a[0] - b[0]);
-      commit();
-    },
+    'data-title': 'Automation',
+    'data-doc': 'Double-click to add a point, drag to move it, double-click a point to remove it. By finger: tap to add, tap a point to remove it.',
+    ondouble: (e) => { if (!T.lastTouch) add(e); },
+    onclick: (e) => { if (T.lastTouch && performance.now() - tapped > 400) add(e); },
   }, svg);
   return el('div', { class: 'track-row auto-row' },
     el('div', { class: 'track-head' },
@@ -366,12 +408,16 @@ function rulerElement(width) {
   brace.append(
     el('div', { class: 'loop-edge left', onpointerdown: (e) => dragLoop(e, true, false) }),
     el('div', { class: 'loop-edge right', onpointerdown: (e) => dragLoop(e, false, true) }));
+  // A mouse locates as it presses; a finger when it taps, so a swipe
+  // along the ruler scrolls the song.
+  const locate = (e) => {
+    const box = e.currentTarget.getBoundingClientRect();
+    T.locate(snap((e.clientX - box.left) / T.ppb));
+  };
   return el('div', {
     class: 'ruler-track', style: `width:${width}px`,
-    onpointerdown: (e) => {
-      const box = e.currentTarget.getBoundingClientRect();
-      T.locate(snap((e.clientX - box.left) / T.ppb));
-    },
+    onpointerdown: (e) => { if (e.pointerType !== 'touch') locate(e); },
+    onclick: (e) => { if (T.lastTouch && !e.target.closest('.loop-brace')) locate(e); },
   }, marks, brace, el('div', { class: 'start-marker', style: `left:${T.startBeat * T.ppb}px` }));
 }
 
@@ -383,7 +429,19 @@ function laneStyle(width) {
     `repeating-linear-gradient(to right, #24262c 0 1px, transparent 1px ${beat}px)`;
 }
 
+// Whether a note clip can be made on TRACK by hand.
+const takesClips = (track) => track.kind === 'midi' && track.instrument.kind !== 'sampler';
+
 function trackRow(track, width) {
+  // Empty lane: the track is chosen and no clip is.
+  const pick = (e) => {
+    if (e.target !== lane) return;
+    T.trackId = track.id;
+    T.clipId = null;
+    document.querySelectorAll('.clip.selected').forEach((n) => n.classList.remove('selected'));
+    renderSelection();
+    renderDetail();
+  };
   const lane = el('div', {
     class: 'lane', style: laneStyle(width),
     ondragover: (e) => e.preventDefault(),
@@ -394,22 +452,15 @@ function trackRow(track, width) {
       const at = snap((e.clientX - box.left) / T.ppb);
       for (const file of e.dataTransfer.files) T.importFile(file, track, at);
     },
-    ondblclick: (e) => {
-      if (track.kind !== 'midi' || e.target !== lane) return;
-      if (track.instrument.kind === 'sampler') return;
+    ondouble: (e) => {
+      if (!takesClips(track) || e.target !== lane) return;
       const box = lane.getBoundingClientRect();
       const per = beatsPerBar();
       const at = Math.floor((e.clientX - box.left) / T.ppb / per) * per;
       T.send(form('add-clip', track.name, kw('start'), at, kw('length'), per));
     },
-    onpointerdown: (e) => {
-      if (e.target !== lane) return;
-      T.trackId = track.id;
-      T.clipId = null;
-      document.querySelectorAll('.clip.selected').forEach((n) => n.classList.remove('selected'));
-      renderSelection();
-      renderDetail();
-    },
+    onpointerdown: (e) => { if (e.pointerType !== 'touch') pick(e); },
+    onclick: (e) => { if (T.lastTouch) pick(e); },
   }, track.clips.filter((clip) => clip.scene === null).map((clip) => clipElement(track, clip)));
   return el('div', { class: 'track-row', 'data-track': track.id }, trackHead(track), lane);
 }
@@ -427,11 +478,20 @@ function renderArrangement() {
   }
   const inner = el('div', { class: 'arr-inner', style: `width:calc(var(--head-width) + ${width}px)` },
     el('div', { class: 'ruler' },
-      el('div', { class: 'ruler-corner' },
+      el('div', { class: 'ruler-corner' }, T.phone ? [
+        el('button', { 'data-ctl': 'add-track', 'data-title': 'Add track',
+                       'data-doc': 'Opens the list of instruments: pick one for a new track.',
+                       onclick: () => T.setSheet('browser') }, '+ Track'),
+        el('button', { 'data-ctl': 'zoom-out', 'data-title': 'Zoom out', 'data-doc': 'Show more of the song.',
+                       disabled: !T.canZoom(-1), onclick: () => T.zoom(-1) }, '−'),
+        el('button', { 'data-ctl': 'zoom-in', 'data-title': 'Zoom in', 'data-doc': 'Show the song larger.',
+                       disabled: !T.canZoom(1), onclick: () => T.zoom(1) }, '+'),
+      ] : [
         el('button', { 'data-ctl': 'add-track', 'data-title': 'Add track',
                        'data-doc': 'A new track with a synth. Ctrl+T does the same.', onclick: () => addTrack(':synth') }, '+ Synth'),
         el('button', { 'data-title': 'Add drums', 'data-doc': 'A new track with a drum kit.', onclick: () => addTrack(':drums') }, '+ Drums'),
-        el('button', { 'data-title': 'Add return', 'data-doc': 'A return track: effects every track can send to.', onclick: addReturn }, '+ Return')),
+        el('button', { 'data-title': 'Add return', 'data-doc': 'A return track: effects every track can send to.', onclick: addReturn }, '+ Return'),
+      ]),
       rulerElement(width)),
     rows,
     song.tracks.length ? null : el('div', { class: 'empty-note' },

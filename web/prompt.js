@@ -84,8 +84,10 @@ function clearCallouts() {
 
 function findControl(target) {
   const wanted = target.toLowerCase();
-  return [...document.querySelectorAll('[data-ctl]')]
-    .find((n) => n.dataset.ctl.toLowerCase() === wanted);
+  const found = [...document.querySelectorAll('[data-ctl]')]
+    .filter((n) => n.dataset.ctl.toLowerCase() === wanted);
+  // A view has a tab in the bar and one along the bottom: the one in sight.
+  return found.find((n) => n.getClientRects().length) || found[0];
 }
 
 // The track a target lives on, opened so the control is there to find.
@@ -107,7 +109,8 @@ function revealFor(target) {
 
 function pointAt(target, say, index) {
   revealFor(target);
-  const node = findControl(target);
+  let node = findControl(target);
+  if (node && T.reveal(node)) node = findControl(target);
   if (!node) {
     if (say) logTurn(el('div', { class: 'turn-note' }, say));
     return;

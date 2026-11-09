@@ -453,7 +453,7 @@ inherits.")
       (let ((page (lambda (req) (declare (ignore req)) (web-file "index.html"))))
         (door "/tala" "text/html; charset=utf-8" page)
         (door "/tala/" "text/html; charset=utf-8" page))
-      (dolist (script '("core.js" "arrange.js" "detail.js" "mixer.js" "session.js" "prompt.js" "main.js"))
+      (dolist (script '("core.js" "arrange.js" "detail.js" "mixer.js" "session.js" "prompt.js" "phone.js" "main.js"))
         (let ((script script))
           (door (format nil "/tala/~a" script) "application/javascript; charset=utf-8"
                 (lambda (req) (declare (ignore req)) (web-file script)))))

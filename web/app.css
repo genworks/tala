@@ -35,8 +35,16 @@ a { color: inherit; text-decoration: none; }
   background: var(--panel); border-bottom: 1px solid var(--line);
 }
 #brand { font-weight: 700; letter-spacing: .08em; color: var(--accent); font-size: 16px; }
-#file-buttons, #transport, #view-tabs { display: flex; align-items: center; gap: 6px; }
-#transport { margin: 0 auto; }
+#file-buttons, #undo-buttons, #transport, #transport-more, #view-tabs { display: flex; align-items: center; gap: 6px; }
+/* The menu is a box only on a phone; here its parts lie in the bar. */
+#menu { display: contents; }
+#menu-button, #tabs, .sheet-buttons, .sheet-head, .bar-break, .touch-only { display: none; }
+#file-buttons { order: 1; }
+#undo-buttons { order: 2; margin-left: -10px; }
+#transport { order: 3; margin-left: auto; }
+#transport-more { order: 4; margin: 0 auto 0 -10px; }
+#view-tabs { order: 5; }
+.dim { color: var(--dim); }
 #transport .readout {
   font-variant-numeric: tabular-nums; background: var(--bg); padding: 3px 9px;
   border-radius: 4px; border: 1px solid var(--line); min-width: 74px; text-align: center;
@@ -75,7 +83,15 @@ a { color: inherit; text-decoration: none; }
 #info p { margin: 4px 0 0; }
 
 #center { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-#arrangement, #mixer, #session { flex: 1 1 58%; min-height: 0; overflow: auto; position: relative; background: var(--bg); }
+#stage { flex: 1 1 58%; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+#arrangement, #mixer, #session { flex: 1 1 0; min-height: 0; overflow: auto; position: relative; background: var(--bg); }
+#actions {
+  display: none; flex: 0 0 auto; align-items: center; gap: 6px; padding: 5px 8px; overflow-x: auto;
+  background: var(--panel); border-top: 1px solid var(--line); white-space: nowrap;
+}
+.touch #actions:not(:empty) { display: flex; }
+#actions .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; margin-right: auto; min-width: 40px; }
+#actions button.danger { color: var(--danger); }
 #detail {
   flex: 0 0 auto; height: 41%; min-height: 200px; border-top: 2px solid var(--line);
   background: var(--panel); display: flex; flex-direction: column; min-width: 0;
@@ -181,7 +197,7 @@ a { color: inherit; text-decoration: none; }
   flex-direction: column; gap: 6px; align-items: center;
 }
 .strip.selected { outline: 1px solid var(--accent); }
-.strip-name { font-weight: 600; width: 100%; text-align: center; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; border-top: 3px solid; padding-top: 3px; }
+.strip-name { flex: none; font-weight: 600; width: 100%; text-align: center; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; border-top: 3px solid; padding-top: 3px; }
 .strip-fader { flex: 1; display: flex; gap: 6px; min-height: 90px; align-self: stretch; justify-content: center; }
 .strip-fader input { writing-mode: vertical-lr; direction: rtl; accent-color: var(--accent); width: 22px; }
 .strip .meter { width: 10px; }
@@ -254,3 +270,117 @@ a { color: inherit; text-decoration: none; }
   position: fixed; z-index: 50; max-width: 260px; background: var(--accent2); color: #04211e;
   padding: 6px 9px; border-radius: 5px; font-size: 12px; box-shadow: 0 3px 12px rgba(0,0,0,.5); cursor: pointer;
 }
+#notes-layer { position: fixed; top: 0; left: 0; }
+#toast {
+  position: fixed; left: 12px; right: 12px; bottom: 60px; z-index: 60; max-width: 480px; margin: 0 auto;
+  background: var(--panel2); border: 1px solid var(--dim); border-radius: 8px; padding: 9px 12px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.6);
+}
+
+/* A finger: larger things to take hold of, and nothing that selects
+   text or scrolls the page out from under a drag. */
+html { overscroll-behavior: none; }
+.touch { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.touch input, .touch textarea, .touch #prompt-log { user-select: text; -webkit-user-select: text; }
+.touch .touch-only { display: inline-flex; align-items: center; gap: 6px; }
+.touch .ruler { height: 36px; }
+.touch .loop-brace { height: 14px; touch-action: none; }
+.touch .loop-edge { width: 18px; }
+.touch .loop-edge.left { left: -7px; }
+.touch .loop-edge.right { right: -7px; }
+.touch .clip.selected { touch-action: none; }
+.touch .clip:not(.selected) .clip-edge { pointer-events: none; }
+.touch .clip.selected .clip-edge { width: 18px; max-width: 35%; background: rgba(255,255,255,.3); }
+.touch .clip.small .clip-edge { display: none; }
+.touch .knob { touch-action: pan-x; }
+.touch .auto-lane circle { touch-action: none; }
+.auto-lane .ring { display: none; }
+.touch .auto-lane .ring { display: inline; }
+.touch .roll-wrap.drawing #roll { touch-action: none; }
+.touch .pads button { touch-action: none; }
+
+/* A phone: one view at a time, tabs along the bottom, and the device
+   panel, the prompt and the browser as sheets under the view. */
+body.phone { --head-width: 150px; --track-height: 68px; height: var(--vh, 100%); display: flex; flex-direction: column; }
+.phone .wide, .phone #brand, .phone #view-tabs, .phone #info { display: none; }
+.phone button, .phone select { min-height: 34px; }
+.phone input, .phone select, .phone textarea { font-size: 16px; }
+.phone #top { flex: 0 0 44px; gap: 6px; padding: 0 6px; position: relative; }
+.phone #menu-button { display: block; min-width: 40px; padding: 0; font-size: 18px; }
+.phone #undo-buttons { margin-left: 0; }
+.phone #transport button, .phone #undo-buttons button { min-width: 38px; min-height: 36px; padding: 3px 7px; }
+.phone #transport .readout { min-width: 62px; padding: 5px; }
+.phone #menu {
+  display: none; position: absolute; top: 44px; left: 0; right: 0; z-index: 40; flex-direction: column; gap: 10px;
+  padding: 10px; background: var(--panel); border-bottom: 1px solid var(--line); box-shadow: 0 8px 18px rgba(0,0,0,.5);
+}
+.phone.menu-open #menu { display: flex; }
+.phone #file-buttons, .phone #transport-more { flex-wrap: wrap; margin: 0; gap: 8px; }
+.phone #tempo { width: 84px; }
+.phone #app { flex: 1 1 0; min-height: 0; height: auto; display: flex; flex-direction: column; }
+.phone #center { flex: 1 1 0; }
+.phone #tabs { display: flex; flex: 0 0 48px; background: var(--panel); border-top: 1px solid var(--line); }
+.phone #tabs button {
+  flex: 1 1 0; min-width: 0; padding: 0; border: 0; border-radius: 0; background: none; font-size: 12px;
+  color: var(--dim); border-top: 2px solid transparent;
+}
+.phone #tabs button.on { color: var(--accent); border-color: var(--accent); background: var(--panel2); }
+.phone #tabs i { flex: 0 0 1px; margin: 8px 0; background: var(--line); }
+
+.phone #browser, .phone #prompt, .phone #detail { display: none; border: 0; border-top: 2px solid var(--line); }
+.phone[data-sheet=browser] #browser, .phone[data-sheet=prompt] #prompt { display: flex; flex: 0 0 54%; order: 2; }
+.phone[data-sheet=detail] #detail { display: flex; flex: 0 0 56%; height: auto; min-height: 0; }
+.phone .sheet-buttons { display: flex; gap: 4px; margin-left: auto; }
+.phone .sheet-buttons button { min-width: 36px; padding: 0; font-size: 16px; }
+.phone .sheet-head, .phone #prompt h2 { display: flex; align-items: center; padding: 4px 8px; }
+.phone .sheet-head { border-bottom: 1px solid var(--line); color: var(--accent); }
+.phone #browser-list { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 6px; align-content: start; }
+.phone #browser-list h3 { grid-column: 1 / -1; }
+.phone #sample-list { max-height: 40%; }
+.phone .kind { font-size: 14px; padding: 6px 8px; }
+.phone #prompt-text { height: 68px; }
+.phone #detail-bar { flex-wrap: wrap; row-gap: 6px; }
+.phone .bar-break { display: block; flex-basis: 100%; height: 0; }
+.phone #detail-bar .turn-note { display: none; }
+.phone #detail-bar input[type=number] { width: 58px; }
+.phone #detail-bar .track-buttons button { flex: 0 0 auto; min-height: 34px; padding: 0 10px; font-size: 13px; }
+.phone.touch #detail-bar .touch-only { display: contents; }
+
+.phone .ruler { height: 36px; }
+.phone .ruler-corner button { min-height: 28px; min-width: 28px; font-size: 12px; }
+.phone .track-buttons button { flex: 1 1 0; min-height: 28px; padding: 0; font-size: 12px; }
+.phone .track-buttons input[type=range] { display: none; }
+.phone .slot { height: 40px; }
+.phone .slot .launch, .phone .scene-cell .launch { min-height: 0; min-width: 30px; font-size: 16px; }
+.phone .scene-cell { min-height: 40px; }
+.phone .device-head button { min-height: 28px; min-width: 28px; }
+.phone .choice select { font-size: 16px; }
+.phone .choice { width: 110px; }
+.phone .pads { width: 200px; }
+.phone .pads button { min-height: 40px; }
+.phone .empty-note { padding: 14px; max-width: calc(100vw - 20px); }
+
+/* The phone on its side: the tabs down the left, the sheet on the right. */
+body.phone.landscape {
+  display: grid; grid-template: "top top" 44px "tabs app" minmax(0, 1fr) / 58px minmax(0, 1fr);
+}
+.phone.landscape #brand { display: block; }
+.phone.landscape #top { grid-area: top; }
+.phone.landscape #app { grid-area: app; flex-direction: row; }
+.phone.landscape #center { flex-direction: row; }
+.phone.landscape #stage { flex: 1 1 0; }
+.phone.landscape #tabs { grid-area: tabs; flex-direction: column; border-top: 0; border-right: 1px solid var(--line); }
+.phone.landscape #tabs button { border-top: 0; border-left: 2px solid transparent; font-size: 11px; }
+.phone.landscape #tabs i { margin: 0 8px; }
+.phone.landscape #browser, .phone.landscape #prompt, .phone.landscape #detail { border-top: 0; border-left: 2px solid var(--line); }
+.phone.landscape[data-sheet=browser] #browser, .phone.landscape[data-sheet=prompt] #prompt { flex: 0 0 min(360px, 48%); }
+.phone.landscape[data-sheet=detail] #detail { flex: 0 0 min(420px, 56%); }
+.phone.landscape #detail-bar { row-gap: 3px; padding: 3px 6px; }
+.phone.landscape #menu { right: auto; width: min(430px, 100%); }
+.phone.landscape #toast { left: 70px; bottom: 12px; }
+
+/* A sheet given the whole screen, by its button or because a keyboard
+   has taken the lower half. */
+.phone:is(.sheet-full, .typing)[data-sheet] #stage { display: none; }
+.phone:is(.sheet-full, .typing):is([data-sheet=browser], [data-sheet=prompt]) #center { display: none; }
+.phone:is(.sheet-full, .typing)[data-sheet] :is(#browser, #prompt, #detail) { flex: 1 1 0; }

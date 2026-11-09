@@ -29,4 +29,8 @@ echo "== midi out"
 timeout 120 node "$DIR/probe.js" "$BASE/tala/?s=midi-test-$$" "${SHOT_DIR:+$SHOT_DIR/midi.png}" 'TALA.midiOutTest()' || status=1
 echo "== samples"
 timeout 120 node "$DIR/probe.js" "$BASE/tala/?s=sample-test-$$" "${SHOT_DIR:+$SHOT_DIR/samples.png}" 'TALA.sampleTest()' || status=1
+echo "== phone"
+PHONE=390x844 timeout 120 node "$DIR/probe.js" "$BASE/tala/?s=phone-test-$$" "${SHOT_DIR:+$SHOT_DIR/phone.png}" 'TALA.phoneTest()' || status=1
+echo "== phone on its side"
+PHONE=844x390 timeout 120 node "$DIR/probe.js" "$BASE/tala/?s=side-test-$$" "${SHOT_DIR:+$SHOT_DIR/phone-side.png}" 'TALA.phoneTest()' || status=1
 exit $status

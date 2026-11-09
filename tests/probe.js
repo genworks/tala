@@ -11,7 +11,9 @@
 // its own against the page, print the result as JSON and take a
 // screenshot.  Exit 0 when the result says ok and the page threw
 // nothing.  Usage: node probe.js URL [screenshot.png] [expression]
-// EXPRESSION defaults to TALA.selfTest().  Talks to Chromium over the
+// EXPRESSION defaults to TALA.selfTest().  PHONE=390x844 in the
+// environment makes the window a phone's, with a finger for a pointer;
+// the page then asks for touches through probeTouch.  Talks to Chromium over the
 // DevTools protocol with Node's own fetch and WebSocket (Node 22 or
 // later); no packages.
 
@@ -21,6 +23,7 @@ const fs = require('fs');
 const url = process.argv[2];
 const shot = process.argv[3];
 const expression = process.argv[4] || 'TALA.selfTest()';
+const phone = (process.env.PHONE || '').match(/^(\d+)x(\d+)$/);
 const bin = process.env.CHROMIUM || 'chromium';
 const profile = `/tmp/tala-probe-${process.pid}`;
 const chrome = spawn(bin, ['--headless=new', '--no-sandbox', '--hide-scrollbars',
@@ -58,6 +61,7 @@ async function main() {
   ws.onmessage = (m) => {
     const msg = JSON.parse(m.data);
     if (msg.id && pending.has(msg.id)) { pending.get(msg.id)(msg); pending.delete(msg.id); }
+    else if (msg.method === 'Runtime.bindingCalled') touch(JSON.parse(msg.params.payload));
     else if (msg.method === 'Runtime.exceptionThrown') {
       const d = msg.params.exceptionDetails;
       errors.push(`${d.text} ${(d.exception && d.exception.description) || ''}`.slice(0, 400));
@@ -74,8 +78,30 @@ async function main() {
     if (r.result.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails).slice(0, 600));
     return r.result.result.value;
   };
+  // A finger, as the browser itself delivers one: STEPS are [x, y] points
+  // it goes down on and moves through before it lifts, or a number of
+  // milliseconds to hold still.  The page hears when it is over.
+  async function touch({ serial, steps }) {
+    let down = false;
+    for (const step of steps) {
+      if (typeof step === 'number') { await sleep(step); continue; }
+      const [x, y] = step;
+      await send('Input.dispatchTouchEvent', { type: down ? 'touchMove' : 'touchStart', touchPoints: [{ x, y }] });
+      down = true;
+      await sleep(30);
+    }
+    await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await sleep(60);
+    await send('Runtime.evaluate', { expression: `TALA.touched(${serial})` });
+  }
   await send('Runtime.enable');
   await send('Page.enable');
+  if (phone) {
+    await send('Emulation.setDeviceMetricsOverride',
+               { width: Number(phone[1]), height: Number(phone[2]), deviceScaleFactor: 2, mobile: true });
+    await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+    await send('Runtime.addBinding', { name: 'probeTouch' });
+  }
   await send('Page.navigate', { url });
   let state = null;
   for (let i = 0; i < 300; i++) {

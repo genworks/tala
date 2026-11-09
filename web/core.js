@@ -96,6 +96,7 @@ T.send = function send(...forms) {
 function status(text) {
   const info = $('#info');
   info.replaceChildren(el('b', {}, 'Tala'), el('p', {}, text));
+  if (T.phone) T.toast(text);
 }
 
 function applySong(song) {
@@ -659,19 +660,29 @@ document.addEventListener('mouseover', (e) => {
   }
 });
 
+// The transport in two parts: what a hand needs while the song plays,
+// and the rest, which a phone keeps in its menu.  A label's words are
+// in a span a narrow bar leaves out.
 function renderTransport() {
   const song = T.song;
-  const box = $('#transport');
-  box.replaceChildren(
+  const wide = (text) => el('span', { class: 'wide' }, text);
+  $('#transport').replaceChildren(
     el('button', { id: 'play', class: T.playing ? 'on' : '', 'data-ctl': 'play', 'data-title': 'Play',
                    'data-doc': 'Play from the marker, or stop. Space does the same.',
-                   onclick: () => (T.playing ? T.stop() : T.play()) }, T.playing ? '■ Stop' : '▶ Play'),
+                   onclick: () => (T.playing ? T.stop() : T.play()) },
+       T.playing ? ['■', wide(' Stop')] : ['▶', wide(' Play')]),
     el('button', { class: song.loopOn ? 'on' : '', 'data-ctl': 'loop', 'data-title': 'Loop',
                    'data-doc': 'Repeat the stretch under the bracket in the ruler. L does the same.',
                    onclick: () => T.send(form('set-loop', song.loopStart, song.loopEnd, kw('on'), !song.loopOn)) }, 'Loop'),
     el('button', { id: 'record', class: T.recording ? 'on rec' : 'rec', 'data-ctl': 'record', 'data-title': 'Record',
                    'data-doc': 'Record what the armed tracks are played, from a MIDI keyboard or the computer keys (M), into a new clip. F9 does the same; press again or Stop to keep the take.',
-                   onclick: () => T.record() }, '● Rec'),
+                   onclick: () => T.record() }, '●', wide(' Rec')),
+    el('span', { class: 'readout', id: 'position' }, '1.1.1'),
+    el('button', { id: 'back-to-arrangement', hidden: true, 'data-ctl': 'back-to-arrangement',
+                   'data-title': 'Back to Arrangement',
+                   'data-doc': 'Tracks playing session clips go back to the timeline, from where the song is now.',
+                   onclick: () => T.backToArrangement() }, '↩', wide(' Arrangement')));
+  $('#transport-more').replaceChildren(
     el('button', { class: T.metronome ? 'on' : '', 'data-ctl': 'metronome', 'data-title': 'Metronome',
                    'data-doc': 'A click on every beat while the song plays, higher on the first of the bar. It is not in an export.',
                    onclick: () => T.toggleMetronome() }, 'Click'),
@@ -681,11 +692,6 @@ function renderTransport() {
       onchange: (e) => T.setClockPort(e.target.value),
     }, el('option', { value: '' }, 'No sync'),
        T.midiOutputs().map((o) => el('option', { value: o.name, selected: o.name === T.clockPort }, `Sync: ${o.name}`)))] : []),
-    el('span', { class: 'readout', id: 'position' }, '1.1.1'),
-    el('button', { id: 'back-to-arrangement', hidden: true, 'data-ctl': 'back-to-arrangement',
-                   'data-title': 'Back to Arrangement',
-                   'data-doc': 'Tracks playing session clips go back to the timeline, from where the song is now.',
-                   onclick: () => T.backToArrangement() }, '↩ Arrangement'),
     el('input', { id: 'tempo', type: 'number', min: 20, max: 300, step: 0.1, value: song.tempo,
                   'data-ctl': 'tempo', 'data-title': 'Tempo', 'data-doc': 'Beats a minute.',
                   onchange: (e) => T.send(form('set-tempo', +e.target.value)) }),

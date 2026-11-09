@@ -77,7 +77,7 @@ function knob(param, value, ctl, onLive, onCommit, automated) {
       const fine = e.shiftKey ? 0.001 : 0.005;
       dragging(e, (dx, dy) => set(denorm(param, x0 - dy * fine)), () => onCommit(current));
     },
-    ondblclick: () => { set(param.default); onCommit(current); },
+    ondouble: () => { set(param.default); onCommit(current); },
     onwheel: (e) => {
       e.preventDefault();
       set(denorm(param, norm(param, current) - Math.sign(e.deltaY) * 0.01));
@@ -154,6 +154,7 @@ function drumBody(track, device) {
       onclick: () => { T.drumPad = i + 1; renderDetail(); },
       onpointerdown: () => T.noteOn(36 + i),
       onpointerup: () => T.noteOff(36 + i),
+      onpointercancel: () => T.noteOff(36 + i),
       ondragover: (e) => e.preventDefault(),
       ondrop: (e) => {
         e.preventDefault();
@@ -276,6 +277,7 @@ function renderDevices(track) {
 function renderDetail() {
   const box = $('#detail');
   const track = selectedTrack();
+  renderActions();
   if (!track) return;
   const clip = selectedClip();
   const notes = T.detail === 'notes' && clip;
@@ -283,7 +285,10 @@ function renderDetail() {
     el('button', { class: notes ? '' : 'on', onclick: () => { T.detail = 'devices'; renderDetail(); } }, 'Devices'),
     el('button', { class: notes ? 'on' : '', disabled: !clip, 'data-ctl': 'notes',
                    onclick: () => { T.detail = 'notes'; renderDetail(); } }, 'Notes'));
-  const bar = el('div', { id: 'detail-bar' }, tabs, el('span', { class: 'title' }, track.name));
+  // On a phone the panel is a sheet: its buttons end the first row and
+  // the clip's fields start a second.
+  const bar = el('div', { id: 'detail-bar' }, tabs, el('span', { class: 'title' }, track.name),
+    sheetButtons(), el('i', { class: 'bar-break' }));
   const field = (label, value, key, doc, step = 0.25) => el('label', { 'data-title': label, 'data-doc': doc }, label,
     el('input', { type: 'number', step, value,
                   onchange: (e) => T.send(form('set-clip', track.name, clip.id, kw(key), +e.target.value)) }));
@@ -305,7 +310,18 @@ function renderDetail() {
     bar.append(
       field('Length', clip.length, 'length', 'How long the clip runs on the timeline, in beats.'),
       field('Repeat', clip.loop || clip.length, 'loop', 'The notes repeat every this many beats.'),
+      // What a finger has for the Alt key and the double-click; the
+      // roll takes hold of the velocity and of Delete once a note is chosen.
+      el('span', { class: 'touch-only' },
+        el('label', { 'data-title': 'Velocity', 'data-doc': 'How hard the chosen note is played, 1 to 127.' }, 'Vel',
+          el('input', { id: 'note-velocity', type: 'number', min: 1, max: 127, step: 1, disabled: true }))),
       quantizeControl(track, clip),
+      el('span', { class: 'touch-only' },
+        el('button', { id: 'draw-notes', class: T.drawing ? 'on' : '', 'data-ctl': 'draw-notes', 'data-title': 'Draw',
+                       'data-doc': 'On: a touch on the grid makes a note, and a drag moves one or, from its right end, stretches it. Off: the grid scrolls and a touch chooses a note.',
+                       onclick: () => { T.drawing = !T.drawing; renderDetail(); } }, 'Draw'),
+        el('button', { id: 'delete-note', disabled: true, 'data-ctl': 'delete-note', 'data-title': 'Delete note',
+                       'data-doc': 'Remove the chosen note.' }, 'Delete note')),
       el('span', { class: 'turn-note' }, 'Double-click: add or remove. Drag: move. Right edge: length. Alt-drag: velocity.'));
   }
   box.replaceChildren(bar, el('div', { id: 'detail-body' }));
@@ -458,6 +474,8 @@ const KEY_WIDTH = 46;
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const pitchName = (p) => `${NOTE_NAMES[p % 12]}${Math.floor(p / 12) - 2}`;
 
+let rollPlace = {};
+
 function renderRoll(track, clip) {
   const drums = track.instrument && track.instrument.kind === 'drums';
   const low = drums ? 36 : 24;
@@ -469,7 +487,7 @@ function renderRoll(track, clip) {
   const width = KEY_WIDTH + span * beat;
   const height = (high - low + 1) * row;
   const canvas = el('canvas', { id: 'roll', width, height });
-  const wrap = el('div', { class: 'roll-wrap' }, canvas);
+  const wrap = el('div', { class: 'roll-wrap' + (T.drawing ? ' drawing' : '') }, canvas);
   body.replaceChildren(wrap);
   const notes = clip.notes.map((n) => [...n]);
   const kit = drums ? kindOf('drums').params.filter((p) => p.key.endsWith('-tune')).map((p) => p.label.replace(/ tune$/, '')) : null;
@@ -519,20 +537,58 @@ function renderRoll(track, clip) {
     const box = canvas.getBoundingClientRect();
     return [e.clientX - box.left, e.clientY - box.top];
   };
+  // The chosen note, and the bar's tools for it.
+  const remove = $('#delete-note');
+  const velocity = $('#note-velocity');
+  const choose = (note) => {
+    selected = note || null;
+    remove.disabled = !selected;
+    velocity.disabled = !selected;
+    velocity.value = selected ? selected[3] : '';
+    draw();
+  };
+  remove.onclick = () => {
+    notes.splice(notes.indexOf(selected), 1);
+    commit();
+  };
+  velocity.onchange = () => {
+    selected[3] = Math.max(1, Math.min(127, Math.round(+velocity.value) || 100));
+    commit();
+  };
+  const audition = (pitch) => {
+    T.noteOn(pitch);
+    setTimeout(() => T.noteOff(pitch), 200);
+  };
   canvas.addEventListener('pointerdown', (e) => {
     const [x, y] = local(e);
     if (x < KEY_WIDTH) {
       const pitch = pitchAt(y);
+      const off = () => {
+        T.noteOff(pitch);
+        window.removeEventListener('pointerup', off);
+        window.removeEventListener('pointercancel', off);
+      };
       T.noteOn(pitch);
-      window.addEventListener('pointerup', () => T.noteOff(pitch), { once: true });
+      window.addEventListener('pointerup', off);
+      window.addEventListener('pointercancel', off);
       return;
     }
-    const note = noteAt(x, y);
-    if (!note) { selected = null; draw(); return; }
-    selected = note;
-    draw();
+    // A finger scrolls the grid and chooses, until Draw is on; then it
+    // makes a note where there is none and drags out its length.
+    const finger = e.pointerType === 'touch';
+    let note = noteAt(x, y);
+    if (finger && !T.drawing) { choose(note); return; }
+    const fresh = finger && !note;
+    if (fresh) {
+      note = [pitchAt(y), Math.floor(beatAt(x) / grid) * grid, grid, 100];
+      notes.push(note);
+      audition(note[0]);
+    }
+    choose(note);
+    if (!note) return;
     const [p0, s0, l0, v0] = note;
-    const edge = KEY_WIDTH + (s0 + l0) * beat - x < 6;
+    const reach = finger ? Math.min(14, l0 * beat / 2) : 6;
+    const edge = fresh || KEY_WIDTH + (s0 + l0) * beat - x < reach;
     dragging(e, (dx, dy, ev) => {
       if (ev.altKey) note[3] = Math.max(1, Math.min(127, Math.round(v0 - dy)));
       else if (edge) note[2] = Math.max(grid / 2, Math.round((l0 + dx / beat) / grid) * grid || grid / 2);
@@ -542,26 +598,34 @@ function renderRoll(track, clip) {
       }
       draw();
     }, () => {
-      if (note[0] !== p0 || note[1] !== s0 || note[2] !== l0 || note[3] !== v0) commit();
+      if (fresh || note[0] !== p0 || note[1] !== s0 || note[2] !== l0 || note[3] !== v0) commit();
     });
   });
-  canvas.addEventListener('dblclick', (e) => {
+  canvas.addEventListener('double', (e) => {
     const [x, y] = local(e);
-    if (x < KEY_WIDTH) return;
+    if (x < KEY_WIDTH || T.lastTouch) return;
     const note = noteAt(x, y);
     if (note) notes.splice(notes.indexOf(note), 1);
     else {
       const pitch = pitchAt(y);
       notes.push([pitch, Math.floor(beatAt(x) / grid) * grid, grid, 100]);
-      T.noteOn(pitch);
-      setTimeout(() => T.noteOff(pitch), 200);
+      audition(pitch);
     }
     commit();
   });
   draw();
-  if (!drums) {
+  // A clip opens on its notes, and then stays where it is scrolled to:
+  // an edit draws the roll again, and must not move it under the hand.
+  const place = () => { rollPlace = { clip: clip.id, top: wrap.scrollTop, left: wrap.scrollLeft }; };
+  const inSight = wrap.clientHeight > 0;
+  if (inSight && rollPlace.clip === clip.id) {
+    wrap.scrollTop = rollPlace.top;
+    wrap.scrollLeft = rollPlace.left;
+  } else if (!drums) {
     const pitches = notes.map((n) => n[0]);
     const middle = pitches.length ? (Math.min(...pitches) + Math.max(...pitches)) / 2 : 60;
     wrap.scrollTop = yOf(middle) - wrap.clientHeight / 2;
   }
+  if (inSight) place();
+  wrap.addEventListener('scroll', place);
 }

@@ -21,14 +21,19 @@ function renderBrowser() {
       onclick: () => {
         const name = uniqueName(k.label);
         T.send(`(add-track ${lit(name)} :instrument :${k.key})`);
+        T.setSheet(null);
       },
     }, k.label)),
+    el('button', { class: 'kind', 'data-title': 'Return track',
+                   'data-doc': 'A return track: effects every track can send to.',
+                   onclick: () => { addReturn(); T.setSheet(null); } }, 'Return track'),
     el('h3', {}, 'Effects'),
     kinds('effect').map((k) => el('button', {
       class: 'kind', 'data-title': k.label, 'data-doc': `${k.doc} Click to add it to the selected track.`,
       onclick: () => {
         T.detail = 'devices';
         T.send(`(add-device ${lit(selectedTrack().name)} :${k.key})`);
+        T.showDetail();
       },
     }, k.label)),
   ].flat());
@@ -54,6 +59,7 @@ function renderSamples() {
       onclick: async () => {
         const target = await audioTrack(null);
         T.send(form('add-audio-clip', target, s.name, kw('start'), T.startBeat));
+        T.setSheet(null);
       },
     }, s.missing ? `⚠ ${s.name}` : s.name)),
   ].flat());
@@ -75,7 +81,8 @@ function renderFileButtons() {
     el('a', { href: `/tala/api/save?s=${encodeURIComponent(T.session)}`, download: `${song.name}.tala` },
       el('button', { 'data-title': 'Save', 'data-doc': 'Download the song as a .tala file.' }, 'Save')),
     el('a', { href: `/tala/api/bounce.wav?s=${encodeURIComponent(T.session)}`, download: `${song.name}.wav` },
-      el('button', { 'data-title': 'Export audio', 'data-doc': 'Render the whole song on the server to a WAV file, frame for frame what you hear here.' }, 'Export WAV')),
+      el('button', { 'data-title': 'Export audio', 'data-doc': 'Render the whole song on the server to a WAV file, frame for frame what you hear here.' }, 'Export WAV')));
+  $('#undo-buttons').replaceChildren(
     el('button', { disabled: !song.undo, 'data-title': 'Undo', 'data-doc': 'Ctrl+Z. A prompt is one undo.',
                    onclick: () => T.send(form('undo')) }, '↶'),
     el('button', { disabled: !song.redo, 'data-title': 'Redo', 'data-doc': 'Ctrl+Y.',
@@ -610,6 +617,197 @@ T.midiOutTest = async function midiOutTest() {
   const failed = Object.entries(checks).filter(([, v]) => !v).map(([k]) => k);
   return { ok: failed.length === 0, failed, checks, gaps, ticks: ticks.length,
            latencyMs: Math.round(((engine.ctx.outputLatency || 0) + (engine.ctx.baseLatency || 0)) * 1000) };
+};
+
+// A finger for the tests.  STEPS are [x, y] points it goes down on and
+// moves through before it lifts, or a number of milliseconds to hold
+// still.  tests/probe.js sends it down the browser's own touch path;
+// without the probe, the events one would cause are made here.
+let fingers = 0;
+const lifting = new Map();
+
+T.touched = function touched(serial) {
+  const done = lifting.get(serial);
+  lifting.delete(serial);
+  if (done) done();
+};
+
+async function finger(...steps) {
+  if (window.probeTouch) {
+    await new Promise((done) => {
+      lifting.set(++fingers, done);
+      window.probeTouch(JSON.stringify({ serial: fingers, steps }));
+    });
+    return;
+  }
+  const event = (type, [x, y]) => new PointerEvent(type, {
+    bubbles: true, cancelable: true, pointerId: 7, pointerType: 'touch', clientX: x, clientY: y,
+  });
+  const points = steps.filter(Array.isArray);
+  const first = points[0];
+  const last = points[points.length - 1];
+  const target = document.elementFromPoint(...first);
+  let held = 0;
+  target.dispatchEvent(event('pointerdown', first));
+  for (const step of steps.slice(1)) {
+    if (Array.isArray(step)) window.dispatchEvent(event('pointermove', step));
+    else {
+      held += step;
+      await new Promise((r) => setTimeout(r, step));
+    }
+  }
+  window.dispatchEvent(event('pointerup', last));
+  if (held < 500 && Math.hypot(last[0] - first[0], last[1] - first[1]) < 10) {
+    target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: first[0], clientY: first[1] }));
+  }
+}
+
+// The page as a phone shows it and a finger drives it, on a session of
+// its own (it clears the song).  tests/browser.sh runs it upright and on
+// its side; in a wide window it holds the phone's layout while it runs.
+T.phoneTest = async function phoneTest() {
+  const checks = {};
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const until = async (test, ms = 5000) => {
+    for (let waited = 0; waited < ms && !test(); waited += 50) await wait(50);
+    return Boolean(test());
+  };
+  const real = Boolean(window.probeTouch);
+  if (!real) T.setPhone(true);
+  const shown = (node) => Boolean(node) && node.getClientRects().length > 0;
+  const middle = (node) => {
+    const box = node.getBoundingClientRect();
+    return [Math.round(box.left + box.width / 2), Math.round(box.top + box.height / 2)];
+  };
+  const tap = (node) => finger(middle(node));
+  const bass = () => T.song.tracks.find((t) => t.name === 'Bass');
+  await T.send(form('clear-song'));
+  await T.send(form('set-tempo', 120), form('add-track', 'Bass'),
+               form('add-clip', 'Bass', kw('start'), 0, kw('length'), 4, kw('notes'), [[36, 0, 1], [43, 2, 1]]),
+               form('add-clip', 'Bass', kw('start'), 60, kw('length'), 4),
+               form('add-track', 'Kick', kw('instrument'), kw('drums')));
+  await T.synced;
+  T.setView('arrangement');
+  // the layout: one view, the tabs, nothing wider or taller than the window
+  const fits = () => document.documentElement.scrollWidth <= innerWidth
+    && Math.round($('#tabs').getBoundingClientRect().bottom) <= innerHeight
+    && Math.round($('#top').getBoundingClientRect().right) <= innerWidth;
+  checks.phone = T.phone && T.landscape === (real && innerWidth > innerHeight);
+  checks.fits = fits();
+  checks.oneView = shown($('#arrangement')) && shown($('#tabs')) && !shown($('#view-tabs'))
+    && !shown($('#browser')) && !shown($('#prompt')) && !shown($('#detail'));
+  // the tabs
+  await tap(findControl('view:session'));
+  checks.sessionTab = await until(() => T.view === 'session' && shown($('#session')) && !shown($('#arrangement')));
+  await tap(findControl('view:mixer'));
+  checks.mixerTab = await until(() => shown($('#mixer')) && document.querySelectorAll('.strip').length === allTracks().length);
+  await tap(findControl('view:arrangement'));
+  await until(() => T.view === 'arrangement');
+  // a sheet: up, the whole screen, half again, away
+  await tap(findControl('sheet:prompt'));
+  checks.sheetUp = await until(() => shown($('#prompt')) && shown($('#stage')));
+  checks.sheetFits = fits();
+  await tap(findControl('sheet:full'));
+  checks.sheetFull = await until(() => shown($('#prompt')) && !shown($('#stage')));
+  await tap(findControl('sheet:full'));
+  await tap(findControl('sheet:close'));
+  checks.sheetAway = await until(() => !shown($('#prompt')) && shown($('#stage')));
+  // the browser adds a track and gets out of the way
+  await tap(findControl('add-track'));
+  checks.browserUp = await until(() => shown($('#browser')));
+  await tap([...document.querySelectorAll('#browser-list .kind')].find((n) => n.textContent === 'Return track'));
+  checks.addedFromBrowser = await until(() => T.song.returns.length === 1 && !shown($('#browser')));
+  // the menu
+  await tap($('#menu-button'));
+  checks.menuOpens = await until(() => shown($('#file-buttons')) && shown($('#tempo')));
+  await finger(middle($('#arrangement')));
+  checks.menuCloses = await until(() => !shown($('#file-buttons')));
+  // a finger held on a control reads its help and does not press it
+  const play = middle($('#play'));
+  await finger(play, 750);
+  checks.heldReadsHelp = !$('#toast').hidden && /play/i.test($('#toast').textContent) && !T.playing;
+  $('#toast').hidden = true;
+  // zoom
+  const ppb = T.ppb;
+  await tap(findControl('zoom-in'));
+  checks.zoom = await until(() => T.ppb > ppb);
+  await tap(findControl('zoom-out'));
+  await until(() => T.ppb === ppb);
+  // a swipe along a lane scrolls the song, clip or no clip; the browser
+  // does that, so only its own finger shows it
+  const clipNode = () => document.querySelector(`[data-ctl="clip:${bass().clips[0].id}"]`);
+  const [cx, cy] = middle(clipNode());
+  if (real) {
+    await finger([cx + 60, cy], [cx + 20, cy], [cx - 40, cy], [cx - 80, cy]);
+    checks.swipeScrolls = await until(() => $('#arrangement').scrollLeft > 20, 2000);
+    checks.swipeLeavesClip = bass().clips[0].start === 0;
+    $('#arrangement').scrollLeft = 0;
+    await wait(100);
+  }
+  // a tap chooses the clip; then it moves, and the strip has its verbs
+  await tap(clipNode());
+  checks.tapSelects = await until(() => T.clipId === bass().clips[0].id && shown(findControl('action:edit')));
+  const [sx, sy] = middle(clipNode());
+  await finger([sx, sy], [sx + T.ppb, sy], [sx + 3 * T.ppb, sy], [sx + 4 * T.ppb, sy]);
+  checks.dragMoves = await until(() => bass().clips[0].start === 4);
+  await tap(findControl('action:duplicate'));
+  checks.duplicate = await until(() => bass().clips.length === 3);
+  await T.send(form('undo'));
+  // an automation lane: a tap makes a point, a tap on it takes it away
+  await tap(findControl('track:Bass:automation'));
+  await until(() => Boolean($('.auto-lane')));
+  const lane = $('.auto-lane').getBoundingClientRect();
+  const spot = [Math.round(lane.left + 5 * T.ppb), Math.round(lane.top + lane.height / 2)];
+  await finger(spot);
+  checks.autoPoint = await until(() => document.querySelectorAll('.auto-lane .ring').length === 1, 3000);
+  await wait(450);
+  if (checks.autoPoint) await finger(middle($('.auto-lane .ring')));
+  checks.autoPointGone = await until(() => Boolean($('.auto-lane')) && !$('.auto-lane .ring'), 3000);
+  await tap(findControl('track:Bass:automation'));
+  // the clip's notes, in the sheet: Draw makes one, Delete takes it away
+  await tap(clipNode());
+  await until(() => shown(findControl('action:edit')));
+  await tap(findControl('action:edit'));
+  checks.editOpensRoll = await until(() => T.sheet === 'detail' && shown($('#roll')));
+  checks.rollFits = fits();
+  const notes = () => bass().clips[0].notes.length;
+  await tap($('#draw-notes'));
+  await until(() => T.drawing);
+  const grid = $('.roll-wrap').getBoundingClientRect();
+  const cell = [Math.round(grid.left + grid.width * 0.7), Math.round(grid.top + grid.height * 0.3)];
+  await finger(cell);
+  checks.drawAdds = await until(() => notes() === 3, 3000);
+  await tap($('#draw-notes'));
+  await until(() => !T.drawing);
+  await finger(cell);
+  checks.tapChoosesNote = await until(() => !$('#delete-note').disabled, 2000);
+  await tap($('#delete-note'));
+  checks.deleteNote = await until(() => notes() === 2, 3000);
+  // a knob follows a finger up
+  T.detail = 'devices';
+  renderDetail();
+  const params = T.song.params.join();
+  const [kx, ky] = middle($('#detail .knob'));
+  await finger([kx, ky], [kx, ky - 15], [kx, ky - 30], [kx, ky - 45]);
+  checks.knobTurns = await until(() => T.song.params.join() !== params, 3000);
+  await tap(findControl('sheet:close'));
+  // two taps are a double-click: an empty slot gets a clip and its notes
+  await tap(findControl('view:session'));
+  await until(() => T.view === 'session');
+  const slot = middle(findControl('slot:Kick:0'));
+  await finger(slot);
+  await finger(slot);
+  checks.doubleTap = await until(() => T.song.tracks.find((t) => t.name === 'Kick').clips.length === 1
+    && T.sheet === 'detail' && shown($('#roll')));
+  T.setSheet(null);
+  T.setView('arrangement');
+  checks.fitsAfter = fits();
+  if (!real) {
+    T.setPhone(null);
+    checks.deskAgain = !T.phone && shown($('#browser')) && shown($('#prompt')) && !shown($('#tabs'));
+  }
+  const failed = Object.entries(checks).filter(([, v]) => !v).map(([k]) => k);
+  return { ok: failed.length === 0, failed, checks, width: innerWidth, height: innerHeight, real };
 };
 
 async function start() {

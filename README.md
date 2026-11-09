@@ -36,6 +36,18 @@ for spoken word or anything else the browser can read; drop one on a
 drum pad to play it from there.  Point at any control
 and the Info box says what it does.
 
+On a phone, or in any narrow window, the same page shows one view at a
+time: Arrange, Session and Mixer along the bottom, and beside them Edit
+(the selected track's devices or the clip's notes), Prompt and Browse,
+which rise as sheets over the lower half, or sit to the right when the
+phone is on its side.  A finger swipes the song along; a tap selects a
+clip, which then drags, and a strip above the tabs holds what a mouse
+does by double-click and the keys: Edit, Duplicate, Delete, Rename,
++ Clip.  Two taps are a double-click, and a finger held on a control
+reads its help.  In the notes, Draw turns touches into notes, and with
+it off the grid scrolls and a touch chooses a note for Delete note and
+Vel.  The − and + beside + Track zoom the timeline.
+
 ## How it is built
 
 **A song is one s-expression**, its spec: the file, what undo goes back
@@ -128,7 +140,10 @@ Chorus, Phaser, Reverb, Utility and Limiter.
   holds both implementations to the same frames; it moves only in a
   commit that means to change the sound, by `(tala::record-golden)`.
 - `tests/browser.sh`: the worklet against the server's frames in
-  headless Chromium, then the page driven as a person drives it.
+  headless Chromium, then the page driven as a person drives it, and
+  driven again as a phone, upright and on its side, with the browser's
+  own touches.  `PHONE=390x844` before `tests/probe.js` gives any
+  expression that screen and a finger.
 - `tests/parity.js BASE SESSION [FRAMES]`: the same comparison in Node,
   with no browser, and the engine's speed against real time.
 

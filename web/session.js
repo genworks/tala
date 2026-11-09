@@ -69,8 +69,8 @@ function slotCell(track, scene, row) {
       renderSession();
       renderDetail();
     },
-    ondblclick: async () => {
-      if (clip) { T.detail = 'notes'; renderDetail(); return; }
+    ondouble: async () => {
+      if (clip) { T.detail = 'notes'; renderDetail(); T.showDetail(); return; }
       if (audio) return;
       const answer = await T.send(form('add-clip', track.name, kw('scene'), row, kw('length'), 4));
       const made = T.song.tracks.find((t) => t.id === track.id).clips.find((c) => c.scene === scene.id);
@@ -79,6 +79,7 @@ function slotCell(track, scene, row) {
         T.clipId = made.id;
         T.detail = 'notes';
         renderDetail();
+        T.showDetail();
       }
     },
     ondragover: (e) => e.preventDefault(),
@@ -124,7 +125,7 @@ function renderSession() {
       }, '▶'),
       el('span', {
         class: 'scene-name', 'data-title': scene.name, 'data-doc': 'Double-click to rename.',
-        ondblclick: () => {
+        ondouble: () => {
           const name = window.prompt('Scene name', scene.name);
           if (name && name !== scene.name) T.send(form('rename-scene', row, name));
         },

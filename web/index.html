@@ -8,8 +8,13 @@
 </head>
 <body>
 <header id="top">
+  <button id="menu-button" aria-label="Menu">☰</button>
   <div id="brand">Tala</div>
-  <div id="file-buttons"></div>
+  <div id="menu">
+    <div id="file-buttons"></div>
+    <div id="transport-more"></div>
+  </div>
+  <div id="undo-buttons"></div>
   <div id="transport"></div>
   <div id="view-tabs"></div>
 </header>
@@ -20,9 +25,12 @@
     <div id="info"><b>Info</b><p>Point at any control to see what it does.</p></div>
   </aside>
   <section id="center">
-    <div id="arrangement" data-ctl="arrangement"></div>
-    <div id="session" data-ctl="session" hidden></div>
-    <div id="mixer" data-ctl="mixer" hidden></div>
+    <div id="stage">
+      <div id="arrangement" data-ctl="arrangement"></div>
+      <div id="session" data-ctl="session" hidden></div>
+      <div id="mixer" data-ctl="mixer" hidden></div>
+      <div id="actions"></div>
+    </div>
     <div id="detail"></div>
   </section>
   <aside id="prompt" data-ctl="prompt">
@@ -38,6 +46,8 @@
     </form>
   </aside>
 </main>
+<nav id="tabs"></nav>
+<div id="toast" hidden></div>
 <div id="notes-layer"></div>
 <script src="/tala/core.js"></script>
 <script src="/tala/arrange.js"></script>
@@ -45,6 +55,7 @@
 <script src="/tala/mixer.js"></script>
 <script src="/tala/session.js"></script>
 <script src="/tala/prompt.js"></script>
+<script src="/tala/phone.js"></script>
 <script src="/tala/main.js"></script>
 </body>
 </html>
