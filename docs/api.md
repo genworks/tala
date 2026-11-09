@@ -265,7 +265,9 @@ use `fit-clip`.  A clip's BPM out by half or double plays at half or
 double speed: fix it with `:bpm`.
 
 The person can also record onto an armed audio track from the page, from
-a microphone or interface chosen on the track's device panel.  Recording
+a microphone or interface chosen on the track's device panel.  Arming
+and Play record nothing: the ● Rec button in the transport (or F9)
+starts a take and plays, and Rec again or Stop keeps it.  Recording
 is the page's, not yours: a take arrives as a new sample named for the
 track ("Voice take 1") and a clip placed where it was played, already
 moved earlier by the delay the browser adds.  Over a loop, the last pass

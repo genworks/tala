@@ -397,6 +397,7 @@ T.play = async function play(from = T.startBeat) {
   }
   engine.node.port.postMessage({ t: 'play', beat: from });
   renderTransport();
+  if (!T.recording && armedTracks().length) status('Playing, not recording: armed tracks record when ● Rec (F9) is on.');
 };
 
 T.stop = function stop() {
@@ -674,12 +675,12 @@ function renderTransport() {
     el('button', { class: T.metronome ? 'on' : '', 'data-ctl': 'metronome', 'data-title': 'Metronome',
                    'data-doc': 'A click on every beat while the song plays, higher on the first of the bar. It is not in an export.',
                    onclick: () => T.toggleMetronome() }, 'Click'),
-    T.midiOutputs().length ? el('select', {
+    ...(T.midiOutputs().length ? [el('select', {
       'data-ctl': 'clock-out', 'data-title': 'MIDI clock out',
       'data-doc': 'Send MIDI clock, start and stop to an output, so a drum machine or sequencer there follows the tempo and the transport.',
       onchange: (e) => T.setClockPort(e.target.value),
     }, el('option', { value: '' }, 'No sync'),
-       T.midiOutputs().map((o) => el('option', { value: o.name, selected: o.name === T.clockPort }, `Sync: ${o.name}`))) : null,
+       T.midiOutputs().map((o) => el('option', { value: o.name, selected: o.name === T.clockPort }, `Sync: ${o.name}`)))] : []),
     el('span', { class: 'readout', id: 'position' }, '1.1.1'),
     el('button', { id: 'back-to-arrangement', hidden: true, 'data-ctl': 'back-to-arrangement',
                    'data-title': 'Back to Arrangement',
