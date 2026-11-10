@@ -616,6 +616,7 @@ T.midiOutTest = async function midiOutTest() {
   T.midi = realMidi;
   const failed = Object.entries(checks).filter(([, v]) => !v).map(([k]) => k);
   return { ok: failed.length === 0, failed, checks, gaps, ticks: ticks.length,
+           worstTickMs: Math.max(...tickGaps.map((g) => Math.abs(g - 500 / 24))),
            latencyMs: Math.round(((engine.ctx.outputLatency || 0) + (engine.ctx.baseLatency || 0)) * 1000) };
 };
 
