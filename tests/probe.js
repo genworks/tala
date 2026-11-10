@@ -13,7 +13,9 @@
 // nothing.  Usage: node probe.js URL [screenshot.png] [expression]
 // EXPRESSION defaults to TALA.selfTest().  PHONE=390x844 in the
 // environment makes the window a phone's, with a finger for a pointer;
-// the page then asks for touches through probeTouch.  Talks to Chromium over the
+// the page then asks for touches through probeTouch.  READY, an
+// expression answering "ready", says when a page other than the main
+// one (the admin page) has loaded.  Talks to Chromium over the
 // DevTools protocol with Node's own fetch and WebSocket (Node 22 or
 // later); no packages.
 
@@ -24,6 +26,8 @@ const url = process.argv[2];
 const shot = process.argv[3];
 const expression = process.argv[4] || 'TALA.selfTest()';
 const phone = (process.env.PHONE || '').match(/^(\d+)x(\d+)$/);
+// what says the page is ready: "ready", or the words of what went wrong
+const ready = process.env.READY || 'window.TALA && (TALA.ready ? "ready" : TALA.error || null)';
 const bin = process.env.CHROMIUM || 'chromium';
 const profile = `/tmp/tala-probe-${process.pid}`;
 const chrome = spawn(bin, ['--headless=new', '--no-sandbox', '--hide-scrollbars',
@@ -106,7 +110,7 @@ async function main() {
   let state = null;
   for (let i = 0; i < 300; i++) {
     await sleep(200);
-    try { state = await evaluate('window.TALA && (TALA.ready ? "ready" : TALA.error || null)'); } catch {}
+    try { state = await evaluate(ready); } catch {}
     if (state) break;
   }
   if (state !== 'ready') {

@@ -38,11 +38,12 @@
 (pushnew (make-pathname :name nil :type nil :defaults *load-truename*)
          asdf:*central-registry* :test #'equal)
 
-;; Two of Gendl's gwl files an older image does not carry: the invite
-;; gate and sexp-agent.  From the image when it has them, else the file
-;; from a Gendl checkout beside this one, or wherever INVITE_GATE_FILE
-;; and SEXP_AGENT_FILE point.
+;; Three of Gendl's gwl files an older image does not carry: the invite
+;; gate, visitor-log and sexp-agent.  From the image when it has them,
+;; else the file from a Gendl checkout beside this one, or wherever
+;; INVITE_GATE_FILE, VISITOR_LOG_FILE and SEXP_AGENT_FILE point.
 (dolist (need '((:invite-gate "INVITE_GATE_FILE" "invite-gate" nil)
+                (:visitor-log "VISITOR_LOG_FILE" "visitor-log" "ADMIN-PAGE")
                 (:sexp-agent "SEXP_AGENT_FILE" "sexp-agent" "TRIMMED-PICTURES")))
   (destructuring-bind (package variable name proof) need
     (unless (and (find-package package)

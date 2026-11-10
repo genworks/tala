@@ -16,6 +16,6 @@
 
 (gwl:define-package :tala
     (:export #:song #:make-song #:publish-tala! #:configure-agent! #:configure-gate!
-             #:configure-prompt-log! #:configure-samples! #:gate #:mint-invite! #:revoke-invite! #:invites-report
+             #:configure-prompt-log! #:configure-samples! #:keep-activity! #:*admins* #:gate #:mint-invite! #:revoke-invite! #:invites-report
              #:run-forms #:prompt-song #:render-song #:wav-octets
              #:define-dsp #:dsp-js))

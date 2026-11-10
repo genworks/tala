@@ -1192,6 +1192,183 @@ change: (record-golden).")
       (or (= recorded now)
           (format nil "recorded ~d, now ~d" recorded now)))))
 
+(defun free-port ()
+  "A port nothing listens on just now."
+  (let* ((socket (usocket:socket-listen "127.0.0.1" 0))
+         (port (usocket:get-local-port socket)))
+    (usocket:socket-close socket)
+    port))
+
+(defun lines-written (key count)
+  "The activity lines of the visitor whose file name is KEY once there
+are COUNT of them, waiting up to two seconds: a door writes its line
+just after its reply goes out."
+  (loop repeat 40
+        for lines = (visitor-log:lines *activity* key)
+        until (>= (length lines) count)
+        do (sleep 0.05)
+        finally (return lines)))
+
+(defun test-admin ()
+  "The admin page over a real connection, on a server of its own behind
+a gate with two invites, one of them an admin's: what a visitor does is
+kept and summed up, the admin alone sees it and can delete from it, and
+no invite token is in anything kept or answered.  The doors the room
+already serves are not touched: this server's doors get their gate and
+logs through *door-around*."
+  (let* ((port (free-port))
+         (server (net.aserve:start :port port :server :new :listeners 2 :host "127.0.0.1"))
+         (stamp (get-universal-time))
+         (roster (format nil "/tmp/tala-admin-roster-~d.sexp" stamp))
+         (dir (format nil "/tmp/tala-admin-~d/" stamp))
+         (prompts (format nil "/tmp/tala-admin-prompts-~d/" stamp))
+         (session (format nil "admin-test-~d" stamp))
+         (admins '("Alice"))
+         (doors '("/tala/admin" "/tala/admin-kit.js" "/tala/admin.js" "/tala/api/admin"
+                  "/tala/api/admin/visitor?who=Bob" "/tala/api/admin/delete")))
+    (with-open-file (out roster :direction :output :if-exists :supersede)
+      (format out "(\"alicetoken\" \"Alice\" \"2026-11-01\")~%(\"bobtoken\" \"Bob\" \"2026-11-02\")~%"))
+    (let ((*gate* (invite-gate:make-gate :name "Tala" :prefix "/tala" :cookie "tala_invite"
+                                         :invites-file roster))
+          (*activity* (visitor-log:make-visitor-log
+                       :reads (visitor-log:visitor-log-reads *activity*)))
+          (*prompt-log-directory* nil)
+          (*admins* admins))
+      (labels ((fetch (token path &key content)
+                 (multiple-value-bind (body status)
+                     (glisp:http-request (format nil "http://127.0.0.1:~d~a~ainvite=~a" port path
+                                                 (if (find #\? path) "&" "?") token)
+                                         :method (if content :post :get)
+                                         :content content
+                                         :content-type (and content "application/json"))
+                   (list status body)))
+               (json (token path &key content)
+                 (let ((answer (fetch token path :content content)))
+                   (and (eql 200 (first answer)) (yason:parse (second answer)))))
+               (named (name rows &optional (key "name"))
+                 (find name rows :key (lambda (row) (gethash key row)) :test #'equal))
+               (bob () (visitor-log:lines *activity* "Bob")))
+        (unwind-protect
+             (progn
+               (keep-activity! dir)
+               (configure-prompt-log! :directory prompts)
+               (let* ((gate *gate*) (activity *activity*) (kept *prompt-log-directory*)
+                      (*door-around* (lambda (thunk)
+                                       (let ((*gate* gate) (*activity* activity)
+                                             (*prompt-log-directory* kept) (*admins* admins))
+                                         (funcall thunk)))))
+                 (publish-door server "/tala/" "text/html; charset=utf-8"
+                               (lambda (req) (declare (ignore req)) "the page"))
+                 (publish-door server "/tala/api/forms" "application/json" #'handle-forms)
+                 (publish-admin! server))
+               ;; Bob opens the page and sends two forms by hand, one of them wrong
+               (fetch "bobtoken" (format nil "/tala/?s=~a" session))
+               (fetch "bobtoken" (format nil "/tala/api/forms?s=~a" session)
+                      :content "{\"forms\":\"(set-tempo 133) (add-device \\\"Nope\\\" :delay)\"}")
+               (let ((lines (lines-written "Bob" 2)))
+                 (check "a visit and the forms sent by hand each leave a line, the forms with how they went"
+                   (and (= 2 (length lines))
+                        (equal "/tala/" (getf (first lines) :door))
+                        (eql 2 (getf (second lines) :ran))
+                        (eql 1 (getf (second lines) :failed)))))
+               ;; and asked for something, as the prompt log keeps it
+               (log-turn! (list :who "Bob" :session session :prompt "Make it faster" :state "A song."
+                                :model "stub" :seconds 2 :rounds 1 :reply "Faster now."
+                                :forms "(set-tempo 140)"
+                                :results (list (list :form "(set-tempo 140)" :ok t :value "140" :error nil))
+                                :ok t))
+               (check "with no invite there is no page, and no line"
+                 (and (eql 403 (first (fetch "nobody" "/tala/admin")))
+                      (null (visitor-log:lines *activity* nil))))
+               (check "anyone but an admin, invited or not, is told there is no such page"
+                 (every (lambda (door) (eql 404 (first (fetch "bobtoken" door)))) doors))
+               (check "an admin gets the page, the shared kit and the script"
+                 (let ((page (fetch "alicetoken" "/tala/admin"))
+                       (kit (fetch "alicetoken" "/tala/admin-kit.js"))
+                       (script (fetch "alicetoken" "/tala/admin.js")))
+                   (and (eql 200 (first page))
+                        (search "/tala/admin-kit.js" (second page))
+                        (search "/tala/admin.js?v=" (second page))
+                        (eql 200 (first kit)) (search "visitorAdmin" (second kit))
+                        (eql 200 (first script)) (search "/tala/api/admin" (second script)))))
+               (let* ((text (second (fetch "alicetoken" "/tala/api/admin")))
+                      (summary (yason:parse text))
+                      (him (named "Bob" (gethash "visitors" summary)))
+                      (her (named "Alice" (gethash "visitors" summary)))
+                      (live (named session (gethash "sessions" summary) "id")))
+                 (check "the summary counts what a visitor did"
+                   (and him (eql 1 (gethash "visits" him)) (eql 1 (gethash "forms" him))
+                        (eql 1 (gethash "failed" him)) (eql 1 (gethash "prompts" him))
+                        (gethash "invited" him)
+                        (named session (gethash "sessions" him) "id")
+                        t))
+                 (check "the admin's own looking is no visit and leaves no line"
+                   (and her (eql 0 (gethash "visits" her)) (null (visitor-log:lines *activity* "Alice"))))
+                 (check "the visitor with something recorded is listed ahead of the admin who only looked"
+                   (< (position him (gethash "visitors" summary)) (position her (gethash "visitors" summary))))
+                 (check "a session in memory is shown with its song and whose it is"
+                   (and live (equal "Bob" (gethash "who" live))
+                        (eql 133 (gethash "tempo" (gethash "song" live)))))
+                 (let* ((record (second (fetch "alicetoken" "/tala/api/admin/visitor?who=Bob")))
+                        (events (gethash "events" (yason:parse record)))
+                        (by-hand (second events))
+                        (prompt (third events)))
+                   (check "a visitor's record is their lines and prompts by time, each form with how it went"
+                     (and (equal '("visit" "forms" "prompt")
+                                 (mapcar (lambda (event) (gethash "kind" event)) events))
+                          (search "set-tempo 133" (gethash "forms" by-hand))
+                          (eql 1 (gethash "failed" by-hand))
+                          (equal "Make it faster" (gethash "prompt" prompt))
+                          (let ((result (first (gethash "results" prompt))))
+                            (and (equal "(set-tempo 140)" (gethash "form" result)) (gethash "ok" result)))
+                          t))
+                   (check "no invite token is in anything kept or answered"
+                     (notany (lambda (kept) (or (search "bobtoken" kept) (search "alicetoken" kept)))
+                             (list text record
+                                   (uiop:read-file-string (format nil "~aBob.log" dir)))))
+                   (check "a line is deleted only by its place and its mark together"
+                     (and (eql 500 (first (fetch "alicetoken" "/tala/api/admin/delete"
+                                                 :content (format nil "{\"who\":\"Bob\",\"line\":~d,\"mark\":\"wrong\"}"
+                                                                  (gethash "line" by-hand)))))
+                          (= 2 (length (bob)))
+                          (json "alicetoken" "/tala/api/admin/delete"
+                                :content (format nil "{\"who\":\"Bob\",\"line\":~d,\"mark\":\"~a\"}"
+                                                 (gethash "line" by-hand) (gethash "mark" by-hand)))
+                          (equal '("/tala/") (mapcar (lambda (line) (getf line :door)) (bob)))))
+                   (check "a prompt is deleted only as its own visitor's"
+                     (and (eql 500 (first (fetch "alicetoken" "/tala/api/admin/delete"
+                                                 :content (format nil "{\"who\":\"Alice\",\"turn\":\"~a\"}"
+                                                                  (gethash "turn" prompt)))))
+                          (= 1 (length (turn-files)))
+                          (json "alicetoken" "/tala/api/admin/delete"
+                                :content (format nil "{\"who\":\"Bob\",\"turn\":\"~a\"}" (gethash "turn" prompt)))
+                          (null (turn-files))))))
+               (check "nothing is deleted by a GET, or of a visitor named by a path"
+                 (and (eql 500 (first (fetch "alicetoken" "/tala/api/admin/delete")))
+                      (eql 500 (first (fetch "alicetoken" "/tala/api/admin/visitor?who=..%2FBob")))
+                      (= 1 (length (bob)))))
+               (check "everything kept of a visitor goes at once, and their invite stays"
+                 (let ((gone (json "alicetoken" "/tala/api/admin/delete"
+                                   :content "{\"who\":\"Bob\",\"everything\":true}")))
+                   (and gone (eql 1 (gethash "lines" (gethash "deleted" gone)))
+                        (null (bob))
+                        (eql 200 (first (fetch "bobtoken" "/tala/"))))))
+               (setf admins nil)
+               (check "with no admin named, there is no page for anyone"
+                 (eql 404 (first (fetch "alicetoken" "/tala/admin"))))
+               (setf admins t)
+               (check "with everyone an admin, whoever the gate admits sees it"
+                 (and (eql 200 (first (fetch "bobtoken" "/tala/api/admin")))
+                      (eql 403 (first (fetch "nobody" "/tala/api/admin"))))))
+          (net.aserve:shutdown :server server)
+          (bt:with-lock-held (*sessions-lock*)
+            (remhash session *sessions*)
+            (remhash session *session-touched*))
+          (ignore-errors (delete-file roster))
+          (dolist (tree (list dir prompts))
+            (ignore-errors
+             (uiop:delete-directory-tree (uiop:ensure-directory-pathname tree) :validate t))))))))
+
 (defun run-tests ()
   "Every check: (values failed-names count)."
   (setf *checks* nil)
@@ -1216,6 +1393,7 @@ change: (record-golden).")
   (test-prompt)
   (test-reading-reaches-the-model)
   (test-undo-with-two-editors)
+  (test-admin)
   (test-golden)
   (let ((failed (remove-if #'cdr *checks*)))
     (values (reverse (mapcar #'car failed)) (length *checks*))))

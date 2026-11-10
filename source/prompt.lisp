@@ -176,6 +176,19 @@ cost anyone their prompt."
         (let ((*print-readably* nil))
           (format *error-output* "~&[tala] prompt log: ~a~%" e))))))
 
+(defun results-record (results)
+  "RESULTS as the prompt log keeps them, each (:form text :ok t-or-nil
+:value text :error text): what ran and how it went, in words."
+  (mapcar (lambda (r)
+            (let ((form (getf r :form))
+                  (value (getf r :value)))
+              (list :form (if (stringp form) form (sexp-agent:form-string *agent* form))
+                    :ok (and (getf r :ok) t)
+                    :value (and (getf r :ok)
+                                (printed (if (answer-p value) (answer-text value) value)))
+                    :error (getf r :error))))
+          results))
+
 (defun prompt-song (session prompt &key who)
   "PROMPT answered on SESSION's song: a plist for the page, with
 :reply :results :ok :declined :stopped :ui :heard (PNG octets) :usage."
@@ -223,6 +236,7 @@ cost anyone their prompt."
                      :rounds (getf answer :rounds)
                      :reply (getf answer :reply)
                      :forms (getf answer :forms)
+                     :results (results-record (getf answer :results))
                      :ok (getf answer :ok)))
     (list :reply (getf answer :reply)
           :results (getf answer :results)
@@ -307,9 +321,7 @@ cost anyone their prompt."
                        (plusp (length (string-trim '(#\Space #\Newline #\Tab) prompt))))
             (error "The prompt is empty."))
           (json-text
-           (obj "job" (start-prompt-job! (request-session req) prompt
-                                         (second (invite-gate:find-invite
-                                                  *gate* (invite-gate:request-token *gate* req))))))))))
+           (obj "job" (start-prompt-job! (request-session req) prompt (invitee req))))))))
 
 (defun publish-prompt! (server)
   (publish-door server "/tala/api/prompt" "application/json" #'handle-prompt)

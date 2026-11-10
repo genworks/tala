@@ -34,6 +34,40 @@ point; the gate as it stands."
 (defun revoke-invite! (token) (invite-gate:revoke-invite! *gate* token))
 (defun invites-report () (invite-gate:invites-report *gate*))
 
+;;; What each visitor did, when the operator keeps it: Gendl's
+;;; visitor-log, a file a visitor and a line for each visit, download
+;;; and change.  Off until keep-activity! names a directory: keeping
+;;; what visitors do is the operator's decision, and something the
+;;; visitors should be told.  The admin page (admin.lisp) reads it.
+
+(defvar *activity*
+  (visitor-log:make-visitor-log
+   :reads '("/tala" "/tala/" "/tala/api/bounce.wav" "/tala/api/save"))
+  "The activity log.  The GETs worth a line are a visit to the page and
+a download; the rest are the page fetching what it shows.")
+
+(defun keep-activity! (directory)
+  "Keep what each visitor does under DIRECTORY, made if need be and
+closed to all but its owner; nothing with nil.  The directory."
+  (visitor-log:open-log! *activity* directory))
+
+(defvar *line-notes* nil
+  "What a door has to say of how its request went: a plist that goes on
+the request's line in the activity log.")
+
+(defvar *admins* nil
+  "Who may see the admin page: a list of invite names; t for anyone the
+gate admits, for a development room with no gate; nil for no one, the
+default.")
+
+(defun invitee (req)
+  "The name on REQ's invite; nil with the gate open."
+  (visitor-log:invitee *gate* req))
+
+(defun admin? (req)
+  "Whether REQ's person may see the admin page."
+  (visitor-log:admin? *gate* req *admins*))
+
 (defun tala-dir ()
   "Where the checkout is: the page and the reference are read from it."
   (asdf:system-source-directory :tala))
@@ -240,8 +274,16 @@ beat depend on.")
 
 (defvar *agent*)
 
+(defvar *session-touched* (make-hash-table :test 'equal)
+  "Session id -> when a request last asked for it, a universal time.")
+
 (defun request-session (req)
-  (session-for (or (net.aserve:request-query-value "s" req :post nil) "default")))
+  (let ((id (or (net.aserve:request-query-value "s" req :post nil) "default")))
+    (bt:with-lock-held (*sessions-lock*)
+      (when (> (hash-table-count *session-touched*) (* 2 *most-sessions*))
+        (clrhash *session-touched*))
+      (setf (gethash id *session-touched*) (get-universal-time)))
+    (session-for id)))
 
 (defun utf-8 (string)
   (flexi-streams:string-to-octets string :external-format :utf-8))
@@ -284,27 +326,48 @@ aserve's own reader makes a string of it, at four bytes a character."
                (setf used got)))
     out))
 
-(defun publish-door (server path content-type fn &key (limit *max-body-bytes*))
+(defvar *door-around* nil
+  "When bound while doors are published, a function of a thunk that each
+of those doors answers inside.  A request is answered on a worker
+thread, which sees none of the publisher's bindings: this is how a
+server of its own gets a gate and logs of its own, as the tests' does,
+with nothing set for the doors already there.")
+
+(defun publish-door (server path content-type fn &key (limit *max-body-bytes*) admin)
   "FN, a function of the request answering a string or octets, at PATH:
-behind the gate, what went wrong going back in words."
-  (net.aserve:publish
-   :path path :server server :content-type content-type
-   :function (lambda (req ent)
-               (cond ((not (invite-gate:invite-allowed? *gate* req)) (refused req ent))
-                     ((oversized? req limit)
-                      (send req ent "text/plain" "That is too large."
-                            net.aserve:*response-bad-request*))
-                     (t
-                      (invite-gate:ensure-invite-cookie! *gate* req)
-                      (let ((result nil) (failure nil))
-                        (handler-case (setf result (funcall fn req))
-                          (serious-condition (e)
-                            (let ((*print-readably* nil))
-                              (setf failure (princ-to-string e)))))
-                        (if failure
-                            (send req ent "text/plain; charset=utf-8" failure
-                                  net.aserve:*response-internal-server-error*)
-                            (send req ent content-type result))))))))
+behind the gate, what went wrong going back in words, and a line in the
+activity log once it has answered.  With ADMIN the door is for *admins*
+alone: anyone else the gate admits is told there is no such page, and an
+admin's looking leaves no line."
+  (let ((around *door-around*))
+    (flet ((serve (req ent)
+             (cond ((not (invite-gate:invite-allowed? *gate* req)) (refused req ent))
+                   ((oversized? req limit)
+                    (send req ent "text/plain" "That is too large."
+                          net.aserve:*response-bad-request*))
+                   ((and admin (not (admin? req)))
+                    (send req ent "text/plain" "Not found." net.aserve:*response-not-found*))
+                   (t
+                    (invite-gate:ensure-invite-cookie! *gate* req)
+                    (let ((result nil) (failure nil) (*line-notes* nil))
+                      (handler-case (setf result (funcall fn req))
+                        (serious-condition (e)
+                          (let ((*print-readably* nil))
+                            (setf failure (princ-to-string e)))))
+                      (if failure
+                          (send req ent "text/plain; charset=utf-8" failure
+                                net.aserve:*response-internal-server-error*)
+                          (send req ent content-type result))
+                      (unless admin
+                        (visitor-log:note! *activity* *gate* req
+                                           :more (if failure
+                                                     (list* :error failure *line-notes*)
+                                                     *line-notes*))))))))
+      (net.aserve:publish
+       :path path :server server :content-type content-type
+       :function (if around
+                     (lambda (req ent) (funcall around (lambda () (serve req ent))))
+                     #'serve)))))
 
 (defun web-file (name)
   (uiop:read-file-string (merge-pathnames (format nil "web/~a" name) (tala-dir))
@@ -366,6 +429,8 @@ behind the gate, what went wrong going back in words."
     (unless (stringp forms)
       (error "The request has no forms."))
     (multiple-value-bind (results passed) (run-forms session forms)
+      (setf *line-notes* (list :ran (length results)
+                               :failed (count-if-not (lambda (r) (getf r :ok)) results)))
       (json-text (obj "results" (results-json results)
                       "ok" (jbool passed)
                       "ui" (ui-json *ui-actions*)
@@ -425,6 +490,7 @@ and two bars for the tails to ring out."
     (bt:with-lock-held ((session-lock session))
       (let* ((song (session-song session))
              (taken (import-sample! song name octets channels)))
+        (setf *line-notes* (list :name taken :bytes (length octets)))
         (json-text (obj "name" taken "song" (song-json song)))))))
 
 (defun handle-load (req)

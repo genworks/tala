@@ -47,11 +47,12 @@
   (when (find-package name)
     (asdf:register-preloaded-system name)))
 
-;;; Two of Gendl's gwl files, the invite gate and sexp-agent: from the
-;;; image when it carries them as Tala needs them, else the files
-;;; INVITE_GATE_FILE and SEXP_AGENT_FILE name (.gitlab-ci.yml fetches
-;;; them from the Gendl repository).
+;;; Three of Gendl's gwl files, the invite gate, visitor-log and
+;;; sexp-agent: from the image when it carries them as Tala needs them,
+;;; else the files INVITE_GATE_FILE, VISITOR_LOG_FILE and SEXP_AGENT_FILE
+;;; name (.gitlab-ci.yml fetches them from the Gendl repository).
 (dolist (need '((:invite-gate "INVITE_GATE_FILE" nil)
+                (:visitor-log "VISITOR_LOG_FILE" "ADMIN-PAGE")
                 (:sexp-agent "SEXP_AGENT_FILE" "TRIMMED-PICTURES")))
   (destructuring-bind (package variable proof) need
     (handler-case

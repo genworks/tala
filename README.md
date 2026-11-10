@@ -48,6 +48,32 @@ reads its help.  In the notes, Draw turns touches into notes, and with
 it off the grid scrolls and a touch chooses a note for Delete note and
 Vel.  The − and + beside + Track zoom the timeline.
 
+## The operator's page
+
+`/tala/admin` shows whoever runs a server what happens on it: who has
+an invite and how often they used it; what each visitor did, session by
+session (visits, the forms their page sent by hand and how those went,
+samples brought in, downloads, and each prompt with the forms the model
+wrote and what became of them); and the sessions in memory, each song's
+tracks, devices, clips and samples.  It deletes from the record what
+its operator asks it to: a line, a prompt, or everything kept of a
+visitor.
+
+```lisp
+(setf tala:*admins* '("Name on my invite"))  ; t: anyone the gate admits; nil: no one
+(tala:keep-activity! "/var/tala/activity/")
+(tala:configure-prompt-log! :directory "/var/tala/prompts/")
+```
+
+Nothing is kept until the last two are said: what visitors do and type
+is theirs, so keeping it is the operator's decision and something the
+visitors should be told.  With no name on `*admins*` there is no page:
+every address of it answers 404, as it does for an invited visitor who
+is not an admin.  No invite token is written to either record or sent
+in any answer.  The activity record, the admin check and the page's
+look come from Gendl's `visitor-log`, which other applications' admin
+pages share.
+
 ## How it is built
 
 **A song is one s-expression**, its spec: the file, what undo goes back

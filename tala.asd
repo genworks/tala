@@ -5,10 +5,11 @@
 (asdf:defsystem #:tala :description
  "The Gendl™ tala Subsystem" :author "Genworks International"
  :license "Affero Gnu Public License (http://www.gnu.org/licenses/)"
- :serial t :version "20261108" :depends-on (:zpng :flexi-streams)
+ :serial t :version "20261110" :depends-on (:zpng :flexi-streams)
  :around-compile "gendl-asdf:around-compile" :components
  ((:file "source/package") (:file "source/dual")
   (:file "source/math") (:file "source/devices")
   (:file "source/engine") (:file "source/samples")
   (:file "source/song") (:file "source/hear") (:file "source/repair")
-  (:file "source/api") (:file "source/web") (:file "source/prompt")))
+  (:file "source/api") (:file "source/web") (:file "source/prompt")
+  (:file "source/admin")))
