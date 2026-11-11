@@ -247,6 +247,15 @@ cost anyone their prompt."
           :heard (reverse heard)
           :usage (getf answer :usage))))
 
+(defun octets-base64 (octets)
+  "OCTETS as a base64 string, on one line, with cl-base64 (which
+sexp-agent loads) rather than sexp-agent's own: Gendl renamed that from
+base64-encode to octets-to-base64, so calling either name would tie
+Tala to images from one side of the rename.  Not called base64-encode
+here either, the name AllegroServe's own function goes by."
+  (cl-base64:usb8-array-to-base64-string
+   (coerce octets '(simple-array (unsigned-byte 8) (*)))))
+
 (defun prompt-json (session result)
   (let ((usage (getf result :usage)))
     (json-text
@@ -256,7 +265,7 @@ cost anyone their prompt."
           "declined" (jbool (getf result :declined))
           "stopped" (jbool (getf result :stopped))
           "ui" (getf result :ui)
-          "heard" (mapcar #'sexp-agent:base64-encode (getf result :heard))
+          "heard" (mapcar #'octets-base64 (getf result :heard))
           "usage" (obj "input" (getf usage :input 0) "output" (getf usage :output 0))
           "song" (bt:with-lock-held ((session-lock session))
                    (song-json (session-song session)))))))

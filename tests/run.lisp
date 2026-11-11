@@ -1092,7 +1092,9 @@ of an audio track at 120 BPM."
 
 (defun call-with-stub-model (replies fn)
   "FN with *AGENT* answering REPLIES, texts, in turn: the requests it
-had go to a function FN is called with."
+had go to a function FN is called with.  The stand-in answers as
+sexp-agent's call does, (values response status); SBCL holds ask to
+that, since call errs on any status but 200."
   (let* ((requests '())
          (saved (fdefinition 'sexp-agent::call)))
     (setf (fdefinition 'sexp-agent::call)
@@ -1105,7 +1107,7 @@ had go to a function FN is called with."
                     (gethash "text" block) (or (pop replies) (format nil "```lisp~%```"))
                     (gethash "content" table) (list block)
                     (gethash "stop_reason" table) "end_turn")
-              table)))
+              (values table 200))))
     (unwind-protect (funcall fn (lambda () (reverse requests)))
       (setf (fdefinition 'sexp-agent::call) saved))))
 
@@ -1141,6 +1143,8 @@ had go to a function FN is called with."
          (check "the forms ran" (= 145 (the-object song tempo)))
          (check "the model heard it, and went on"
            (and (= 1 (length (getf result :heard))) (= 2 (length (funcall requests)))))
+         (check "and the page gets what it heard as a PNG in base64"
+           (search "iVBORw0KGgo" (prompt-json session result)))
          (check "the page is told what to light up"
            (= 2 (length (getf result :ui))))
          (check "the reply is both rounds'"
