@@ -33,4 +33,8 @@ echo "== phone"
 PHONE=390x844 timeout 120 node "$DIR/probe.js" "$BASE/tala/?s=phone-test-$$" "${SHOT_DIR:+$SHOT_DIR/phone.png}" 'TALA.phoneTest()' || status=1
 echo "== phone on its side"
 PHONE=844x390 timeout 120 node "$DIR/probe.js" "$BASE/tala/?s=side-test-$$" "${SHOT_DIR:+$SHOT_DIR/phone-side.png}" 'TALA.phoneTest()' || status=1
+echo "== newcomer at a desk"
+timeout 120 node "$DIR/probe.js" "$BASE/tala/?s=newcomer-test-$$" "${SHOT_DIR:+$SHOT_DIR/newcomer.png}" 'TALA.newcomerTest()' || status=1
+echo "== newcomer on a tablet"
+PHONE=820x1180 timeout 120 node "$DIR/probe.js" "$BASE/tala/?s=tablet-test-$$" "${SHOT_DIR:+$SHOT_DIR/newcomer-tablet.png}" 'TALA.newcomerTest()' || status=1
 exit $status

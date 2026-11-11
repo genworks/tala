@@ -310,6 +310,11 @@ function renderDetail() {
     bar.append(
       field('Length', clip.length, 'length', 'How long the clip runs on the timeline, in beats.'),
       field('Repeat', clip.loop || clip.length, 'loop', 'The notes repeat every this many beats.'),
+      ...(canFillLoop(clip) ? [el('button', {
+        'data-ctl': 'fill-loop', 'data-title': 'Fill loop',
+        'data-doc': 'Stretch this clip over the whole loop, its notes repeating at the length they have now, so a bar of drums plays all the way round.',
+        onclick: fillLoop,
+      }, 'Fill loop')] : []),
       // What a finger has for the Alt key and the double-click; the
       // roll takes hold of the velocity and of Delete once a note is chosen.
       el('span', { class: 'touch-only' },
@@ -559,7 +564,40 @@ function renderRoll(track, clip) {
     T.noteOn(pitch);
     setTimeout(() => T.noteOff(pitch), 200);
   };
+  // Two fingers on the grid scroll it, Draw on or off; the note the first
+  // of them had begun goes, as if it had not been touched.
+  const touches = new Map();
+  let pan = null;
+  let dropGesture = null;
+  const midpoint = () => {
+    const all = [...touches.values()];
+    return [(all[0][0] + all[1][0]) / 2, (all[0][1] + all[1][1]) / 2];
+  };
+  canvas.addEventListener('pointermove', (e) => {
+    if (!touches.has(e.pointerId)) return;
+    touches.set(e.pointerId, [e.clientX, e.clientY]);
+    if (pan && touches.size >= 2) {
+      const [mx, my] = midpoint();
+      wrap.scrollLeft -= mx - pan[0];
+      wrap.scrollTop -= my - pan[1];
+      pan = [mx, my];
+    }
+  });
+  const lift = (e) => {
+    touches.delete(e.pointerId);
+    if (touches.size < 2) pan = null;
+  };
+  canvas.addEventListener('pointerup', lift);
+  canvas.addEventListener('pointercancel', lift);
   canvas.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'touch') {
+      touches.set(e.pointerId, [e.clientX, e.clientY]);
+      if (touches.size === 2 && T.drawing) {
+        if (dropGesture) dropGesture();
+        pan = midpoint();
+        return;
+      }
+    }
     const [x, y] = local(e);
     if (x < KEY_WIDTH) {
       const pitch = pitchAt(y);
@@ -589,7 +627,17 @@ function renderRoll(track, clip) {
     const [p0, s0, l0, v0] = note;
     const reach = finger ? Math.min(14, l0 * beat / 2) : 6;
     const edge = fresh || KEY_WIDTH + (s0 + l0) * beat - x < reach;
+    let dropped = false;
+    dropGesture = () => {
+      dropped = true;
+      dropGesture = null;
+      if (fresh) notes.splice(notes.indexOf(note), 1);
+      else note.splice(0, 4, p0, s0, l0, v0);
+      choose(null);
+      draw();
+    };
     dragging(e, (dx, dy, ev) => {
+      if (dropped) return;
       if (ev.altKey) note[3] = Math.max(1, Math.min(127, Math.round(v0 - dy)));
       else if (edge) note[2] = Math.max(grid / 2, Math.round((l0 + dx / beat) / grid) * grid || grid / 2);
       else {
@@ -598,6 +646,8 @@ function renderRoll(track, clip) {
       }
       draw();
     }, () => {
+      if (dropGesture && !dropped) dropGesture = null;
+      if (dropped) return;
       if (fresh || note[0] !== p0 || note[1] !== s0 || note[2] !== l0 || note[3] !== v0) commit();
     });
   });

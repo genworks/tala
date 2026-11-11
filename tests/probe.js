@@ -84,14 +84,17 @@ async function main() {
   };
   // A finger, as the browser itself delivers one: STEPS are [x, y] points
   // it goes down on and moves through before it lifts, or a number of
-  // milliseconds to hold still.  The page hears when it is over.
+  // milliseconds to hold still.  A step of two points, [[x, y], [x, y]],
+  // is two fingers: the second goes down when the first such step comes.
+  // The page hears when it is over.
   async function touch({ serial, steps }) {
-    let down = false;
+    let down = 0;
     for (const step of steps) {
       if (typeof step === 'number') { await sleep(step); continue; }
-      const [x, y] = step;
-      await send('Input.dispatchTouchEvent', { type: down ? 'touchMove' : 'touchStart', touchPoints: [{ x, y }] });
-      down = true;
+      const points = Array.isArray(step[0]) ? step : [step];
+      const touchPoints = points.map(([x, y], id) => ({ x, y, id }));
+      await send('Input.dispatchTouchEvent', { type: points.length > down ? 'touchStart' : 'touchMove', touchPoints });
+      down = points.length;
       await sleep(30);
     }
     await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });

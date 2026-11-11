@@ -15,7 +15,9 @@
 
 'use strict';
 
-const PHONE = '(max-width: 760px), (pointer: coarse) and (max-height: 500px)';
+// A tablet held upright is narrower than the desk's three columns need,
+// so it takes this layout too, as does a narrow window at a desk.
+const PHONE = '(max-width: 1099px), (pointer: coarse) and (max-height: 500px)';
 const ZOOMS = [6, 9, 14, 22, 33, 50];
 const ZOOM = T.ppb;
 const SHEETS = { detail: 'Edit', prompt: 'Prompt', browser: 'Browse' };
@@ -150,6 +152,7 @@ function renderActions() {
       T.showDetail();
     }),
     button('Duplicate', 'duplicate', 'Copy the clip after itself.', duplicateClip),
+    canFillLoop(clip) ? button('Fill loop', 'fill-loop', 'Stretch the clip over the whole loop, its notes repeating.', fillLoop) : null,
     button('Delete', 'delete', 'Remove the clip. Undo brings it back.', deleteSelection, 'danger'),
   ] : [
     el('span', { class: 'title' }, track.name),
@@ -160,7 +163,9 @@ function renderActions() {
       : null,
     fixed ? null : button('Delete track', 'delete', 'Remove the track. Undo brings it back.', deleteSelection, 'danger'),
   ];
-  box.replaceChildren(...items.filter(Boolean));
+  // a name with nothing to do to it (the master, chosen) is no strip
+  const kept = items.filter(Boolean);
+  box.replaceChildren(...(kept.length > 1 ? kept : []));
 }
 
 function addClipAtStart(track) {
@@ -251,12 +256,14 @@ document.addEventListener('contextmenu', (e) => { if (T.lastTouch) e.preventDefa
 
 // DOUBLE is the page's double-click: the browser's own, or two taps of a
 // finger close together, for the browsers that send none.
-let doubled = -1000;
+let doubled = { time: -1000, x: 0, y: 0 };
 let tap = null;
 
 function double(e) {
-  if (e.timeStamp - doubled < 500) return;
-  doubled = e.timeStamp;
+  // the browser's dblclick and two taps can both report one gesture;
+  // a double-click somewhere else straight after is a gesture of its own
+  if (e.timeStamp - doubled.time < 500 && Math.hypot(e.clientX - doubled.x, e.clientY - doubled.y) < 24) return;
+  doubled = { time: e.timeStamp, x: e.clientX, y: e.clientY };
   tap = null;
   e.target.dispatchEvent(new MouseEvent('double', {
     bubbles: true, cancelable: true, view: window, clientX: e.clientX, clientY: e.clientY, altKey: e.altKey,

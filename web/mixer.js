@@ -66,8 +66,9 @@ T.setView = function setView(view) {
 
 function renderTabs() {
   $('#view-tabs').replaceChildren(
-    ...[['arrangement', 'Arrangement'], ['session', 'Session'], ['mixer', 'Mixer']].map(([key, label]) =>
+    // the end of a word in a span, which a narrow bar leaves out
+    ...[['arrangement', 'Arrange', 'ment'], ['session', 'Session', ''], ['mixer', 'Mixer', '']].map(([key, label, more]) =>
       el('button', { class: T.view === key ? 'on' : '', 'data-ctl': `view:${key}`,
-                     'data-title': label, 'data-doc': 'Tab switches between the arrangement and the session.',
-                     onclick: () => T.setView(key) }, label)));
+                     'data-title': label + more, 'data-doc': 'Tab switches between the arrangement and the session.',
+                     onclick: () => T.setView(key) }, label, more ? el('span', { class: 'wide' }, more) : null)));
 }

@@ -31,13 +31,16 @@ the computer's keys into a keyboard, and a MIDI keyboard is picked up if
 the browser offers one (Chrome and Edge do; Safari has no MIDI).  An
 External track sends its notes to a MIDI output, and the Sync menu sends
 MIDI clock, start and stop to one.  Double-click a lane for a clip and a
-clip for its notes.  Drop an audio file on a track, or use Import audio,
+clip for its notes.  The Loop field in the bar sets how many bars the loop
+runs, and Fill loop stretches a clip over the whole of it, its notes
+repeating, so one bar of drums plays all the way round; − and + beside the
+add-track buttons, or the − and = keys, zoom the timeline.  Drop an audio file on a track, or use Import audio,
 for spoken word or anything else the browser can read; drop one on a
 drum pad to play it from there.  Point at any control
 and the Info box says what it does.
 
-On a phone, or in any narrow window, the same page shows one view at a
-time: Arrange, Session and Mixer along the bottom, and beside them Edit
+On a phone or a tablet held upright, or in any window under 1100 pixels
+wide, the same page shows one view at a time: Arrange, Session and Mixer along the bottom, and beside them Edit
 (the selected track's devices or the clip's notes), Prompt and Browse,
 which rise as sheets over the lower half, or sit to the right when the
 phone is on its side.  A finger swipes the song along; a tap selects a
@@ -46,7 +49,8 @@ does by double-click and the keys: Edit, Duplicate, Delete, Rename,
 + Clip.  Two taps are a double-click, and a finger held on a control
 reads its help.  In the notes, Draw turns touches into notes, and with
 it off the grid scrolls and a touch chooses a note for Delete note and
-Vel.  The − and + beside + Track zoom the timeline.
+Vel; two fingers scroll it either way.  The − and + beside + Track zoom
+the timeline, and Fill loop is in the strip when a clip is chosen.
 
 ## The operator's page
 
@@ -168,8 +172,10 @@ Chorus, Phaser, Reverb, Utility and Limiter.
 - `tests/browser.sh`: the worklet against the server's frames in
   headless Chromium, then the page driven as a person drives it, and
   driven again as a phone, upright and on its side, with the browser's
-  own touches.  `PHONE=390x844` before `tests/probe.js` gives any
-  expression that screen and a finger.
+  own touches; then a newcomer's first minutes (a drum track, a clip,
+  four kicks, a loop of 16 bars the drums fill, Play, Save, New, Open),
+  at a desk with a mouse and on a tablet with a finger.  `PHONE=390x844`
+  before `tests/probe.js` gives any expression that screen and a finger.
 - `tests/parity.js BASE SESSION [FRAMES]`: the same comparison in Node,
   with no browser, and the engine's speed against real time.
 

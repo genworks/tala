@@ -444,6 +444,10 @@ function trackRow(track, width) {
   };
   const lane = el('div', {
     class: 'lane', style: laneStyle(width),
+    'data-title': track.name,
+    'data-doc': takesClips(track)
+      ? 'Double-click (or tap twice) an empty place for a clip of one bar there. Drop an audio file to import it here.'
+      : 'Drop an audio file to import it here, or record into it.',
     ondragover: (e) => e.preventDefault(),
     ondrop: (e) => {
       e.preventDefault();
@@ -491,11 +495,20 @@ function renderArrangement() {
                        'data-doc': 'A new track with a synth. Ctrl+T does the same.', onclick: () => addTrack(':synth') }, '+ Synth'),
         el('button', { 'data-title': 'Add drums', 'data-doc': 'A new track with a drum kit.', onclick: () => addTrack(':drums') }, '+ Drums'),
         el('button', { 'data-title': 'Add return', 'data-doc': 'A return track: effects every track can send to.', onclick: addReturn }, '+ Return'),
+        el('button', { 'data-ctl': 'zoom-out', 'data-title': 'Zoom out', 'data-doc': 'Show more of the song. The − key does the same.',
+                       disabled: !T.canZoom(-1), onclick: () => T.zoom(-1) }, '−'),
+        el('button', { 'data-ctl': 'zoom-in', 'data-title': 'Zoom in', 'data-doc': 'Show the song larger. The = key does the same.',
+                       disabled: !T.canZoom(1), onclick: () => T.zoom(1) }, '+'),
       ]),
       rulerElement(width)),
     rows,
     song.tracks.length ? null : el('div', { class: 'empty-note' },
       'An empty song. Add a track above, or ask the prompt for a setup: "Set up a Goa trance groove at 145 BPM."'),
+    // a first track, and no clip yet: how a clip is made
+    !song.tracks.length || song.tracks.some((t) => t.clips.length) ? null : el('div', { class: 'empty-note' },
+      T.touch
+        ? 'Tap a track\'s lane twice to make a clip of one bar, and tap the clip twice to write its notes. Then Play.'
+        : 'Double-click a track\'s lane to make a clip of one bar, and double-click the clip to write its notes. Then Play, or press Space.'),
     el('div', { class: 'playhead', id: 'playhead' }));
   box.replaceChildren(inner);
   box.scrollLeft = left;
@@ -530,6 +543,36 @@ function duplicateClip() {
   const track = selectedTrack();
   const clip = selectedClip();
   if (clip) T.send(form('duplicate-clip', track.name, clip.id, clip.start + clip.length));
+}
+
+// Whether CLIP, a note clip, could be made to play the whole loop: it
+// does not already, and its notes have a length to repeat.
+function canFillLoop(clip) {
+  const song = T.song;
+  return Boolean(clip) && !clip.sample && clip.scene === null
+    && !(clip.start <= song.loopStart && clip.start + clip.length >= song.loopEnd);
+}
+
+// The selected clip from the loop's start to its end, its notes repeating
+// at the length they had: one bar of drums becomes a loop's worth.
+function fillLoop() {
+  const track = selectedTrack();
+  const clip = selectedClip();
+  if (!canFillLoop(clip)) return;
+  const song = T.song;
+  T.send(form('set-clip', track.name, clip.id, kw('start'), song.loopStart,
+              kw('length'), song.loopEnd - song.loopStart, kw('loop'), clip.loop || clip.length));
+}
+
+// The loop, LENGTH bars long from where it starts, and on; zoomed out
+// until it fits the window when it can.
+function setLoopBars(bars) {
+  const song = T.song;
+  const length = Math.max(1, Math.min(512, Math.round(bars))) * beatsPerBar();
+  T.send(form('set-loop', song.loopStart, song.loopStart + length, kw('on'), true)).then(() => {
+    const room = $('#arrangement').clientWidth - $('.ruler-corner').offsetWidth - 20;
+    while (length * T.ppb > room && T.canZoom(-1)) T.zoom(-1);
+  });
 }
 
 // What moves between states: the playhead, the position, the meters.

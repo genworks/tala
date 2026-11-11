@@ -156,6 +156,8 @@ document.addEventListener('keydown', (e) => {
   if (key === 'l') {
     T.send(form('set-loop', T.song.loopStart, T.song.loopEnd, kw('on'), !T.song.loopOn));
   }
+  if (key === '-' || key === '_') T.zoom(-1);
+  if (key === '=' || key === '+') T.zoom(1);
 });
 
 document.addEventListener('keyup', (e) => {
@@ -778,6 +780,22 @@ T.phoneTest = async function phoneTest() {
   const cell = [Math.round(grid.left + grid.width * 0.7), Math.round(grid.top + grid.height * 0.3)];
   await finger(cell);
   checks.drawAdds = await until(() => notes() === 3, 3000);
+  // with Draw on, two fingers scroll the grid and make no note; only the
+  // browser's own touches carry two fingers
+  if (real) {
+    await wait(300);
+    const wrap = $('.roll-wrap');
+    const top0 = wrap.scrollTop;
+    const way = top0 > 60 ? 1 : -1;
+    const a = [Math.round(grid.left + grid.width * 0.35), Math.round(grid.top + grid.height * 0.5)];
+    const b = [a[0] + 70, a[1]];
+    const moved = (d) => [[a[0], a[1] + way * d], [b[0], b[1] + way * d]];
+    await finger(a, [a, b], moved(20), moved(50), moved(80));
+    checks.twoFingersScrollWhileDrawing = await until(() => Math.abs(wrap.scrollTop - top0) > 20, 2000) && notes() === 3;
+    // back where the note drawn above is under the next tap
+    wrap.scrollTop = top0;
+    await wait(200);
+  }
   await tap($('#draw-notes'));
   await until(() => !T.drawing);
   await finger(cell);
@@ -809,6 +827,151 @@ T.phoneTest = async function phoneTest() {
   }
   const failed = Object.entries(checks).filter(([, v]) => !v).map(([k]) => k);
   return { ok: failed.length === 0, failed, checks, width: innerWidth, height: innerHeight, real };
+};
+
+// A newcomer's first minutes, on a session of its own (it clears the
+// song): a drum track, a clip, four kicks, a loop of 16 bars the drums
+// fill, Play, Save, New, and Open the saved file -- each step by what is
+// on the screen, as a mouse does it at a desk and as a finger does it
+// on a tablet (tests/browser.sh runs both).
+T.newcomerTest = async function newcomerTest() {
+  const checks = {};
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const until = async (test, ms = 5000) => {
+    for (let waited = 0; waited < ms && !test(); waited += 50) await wait(50);
+    return Boolean(test());
+  };
+  const touch = Boolean(window.probeTouch);
+  const shown = (node) => Boolean(node) && node.getClientRects().length > 0;
+  const button = (text) => [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === text && shown(b));
+  const middle = (node) => {
+    const box = node.getBoundingClientRect();
+    return [Math.round(box.left + box.width / 2), Math.round(box.top + box.height / 2)];
+  };
+  const press = async (node) => {
+    if (touch) await finger(middle(node));
+    else node.click();
+  };
+  // a double-click, or two taps
+  const twice = async ([x, y]) => {
+    if (touch) {
+      await finger([x, y]);
+      await wait(120);
+      await finger([x, y]);
+    } else {
+      document.elementFromPoint(x, y).dispatchEvent(
+        new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+    }
+  };
+  const fits = () => document.documentElement.scrollWidth <= innerWidth;
+  const menu = async () => {
+    if (T.phone && !document.body.classList.contains('menu-open')) await press($('#menu-button'));
+  };
+  const drums = () => T.song.tracks.find((t) => t.instrument && t.instrument.kind === 'drums');
+  await T.send(form('clear-song'));
+  T.setView('arrangement');
+  checks.fits = fits() && shown($('#play'));
+
+  // a drum track: a button at a desk, the list of instruments on a tablet
+  if (T.phone) {
+    await press($('[data-ctl="add-track"]'));
+    await until(() => shown($('#browser')));
+    await press([...document.querySelectorAll('#browser .kind')].find((b) => b.textContent.trim() === 'Drums'));
+  } else {
+    await press(button('+ Drums'));
+  }
+  checks.track = await until(() => drums());
+  await wait(200);
+  const hint = [...document.querySelectorAll('#arrangement .empty-note')].find(shown);
+  checks.saysHowToMakeAClip = Boolean(hint) && /lane/.test(hint.textContent) && /clip/.test(hint.textContent);
+
+  // a clip, by double-clicking the lane
+  const lane = $(`.track-row[data-track="${drums().id}"] .lane`);
+  const box = lane.getBoundingClientRect();
+  await twice([Math.round(box.left + 16), Math.round(box.top + box.height / 2)]);
+  checks.clip = await until(() => drums().clips.length === 1);
+
+  // its notes, by double-clicking it
+  await wait(200);
+  const clipNode = () => $(`[data-ctl="clip:${drums().clips[0].id}"]`);
+  await twice(middle(clipNode()));
+  checks.rollOpens = await until(() => T.detail === 'notes' && shown($('#roll')));
+  await wait(300);
+
+  // a kick on each beat: double-clicks at a desk, Draw and taps on a tablet
+  if (touch) await press($('#draw-notes'));
+  const roll = $('#roll').getBoundingClientRect();
+  const beat = (roll.width - KEY_WIDTH) / (drums().clips[0].loop || drums().clips[0].length);
+  for (let b = 0; b < 4; b++) {
+    const at = [Math.round(roll.left + KEY_WIDTH + (b + 0.3) * beat), Math.round(roll.top + 7 * 22 + 11)];
+    if (touch) await finger(at);
+    else await twice(at);
+    await until(() => drums().clips[0].notes.length === b + 1, 2000);
+  }
+  if (touch) await press($('#draw-notes'));
+  checks.fourKicks = drums().clips[0].notes.length === 4
+    && drums().clips[0].notes.every((n) => n[0] === 36);
+
+  // a loop of 16 bars, typed, and the clip filling it
+  await menu();
+  const length = $('[data-ctl="loop-length"]');
+  checks.loopField = shown(length);
+  length.value = '16';
+  length.dispatchEvent(new Event('change', { bubbles: true }));
+  checks.loop16 = await until(() => T.song.loopEnd - T.song.loopStart === 16 * beatsPerBar() && T.song.loopOn);
+  if (T.phone) document.body.classList.remove('menu-open');
+  await wait(300);
+  checks.loopInView = await until(() => {
+    const room = $('#arrangement').clientWidth - $('.ruler-corner').offsetWidth;
+    return 16 * beatsPerBar() * T.ppb <= room;
+  }, 2000);
+  const fill = button('Fill loop');
+  checks.fillButton = Boolean(fill);
+  if (fill) await press(fill);
+  checks.filled = await until(() => {
+    const c = drums().clips[0];
+    return c.start <= T.song.loopStart && c.start + c.length >= T.song.loopEnd && c.loop === 4;
+  });
+
+  // Play
+  if (T.phone) T.setSheet(null);
+  await press($('#play'));
+  checks.plays = await until(() => T.playing && T.beat > 1, 6000);
+  if (T.playing) await press($('#play'));
+  await until(() => !T.playing);
+
+  // Save, New, and Open what was saved
+  await menu();
+  const save = [...document.querySelectorAll('#file-buttons a')].find((a) => a.textContent.trim() === 'Save');
+  checks.saveLink = shown(save) && /\.tala$/.test(save.getAttribute('download'));
+  const saved = await (await fetch(save.href)).text();
+  await press(button('New'));
+  checks.newEmpties = await until(() => !T.song.tracks.length);
+  await menu();
+  const pickers = [];
+  const click = HTMLInputElement.prototype.click;
+  HTMLInputElement.prototype.click = function () {
+    if (this.type === 'file') pickers.push(this);
+    else click.call(this);
+  };
+  try {
+    await press(button('Open'));
+  } finally {
+    HTMLInputElement.prototype.click = click;
+  }
+  checks.openAsks = pickers.length === 1;
+  if (pickers.length) {
+    const files = new DataTransfer();
+    files.items.add(new File([saved], save.getAttribute('download'), { type: 'text/plain' }));
+    pickers[0].files = files.files;
+    pickers[0].dispatchEvent(new Event('change'));
+  }
+  checks.reopened = await until(() => drums() && drums().clips.length === 1
+    && drums().clips[0].notes.length === 4 && T.song.loopEnd - T.song.loopStart === 16 * beatsPerBar());
+  document.body.classList.remove('menu-open');
+  checks.fitsAfter = fits();
+  const failed = Object.entries(checks).filter(([, v]) => !v).map(([k]) => k);
+  return { ok: failed.length === 0, failed, checks, phone: T.phone, touch, width: innerWidth, height: innerHeight };
 };
 
 async function start() {

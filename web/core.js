@@ -695,11 +695,18 @@ function renderTransport() {
     el('input', { id: 'tempo', type: 'number', min: 20, max: 300, step: 0.1, value: song.tempo,
                   'data-ctl': 'tempo', 'data-title': 'Tempo', 'data-doc': 'Beats a minute.',
                   onchange: (e) => T.send(form('set-tempo', +e.target.value)) }),
-    el('span', { class: 'dim' }, 'BPM'),
+    el('span', { class: 'dim bpm-label' }, 'BPM'),
     el('select', { 'data-ctl': 'time-signature', 'data-title': 'Time signature', 'data-doc': 'Beats in a bar over the beat note.',
                    onchange: (e) => { const [n, d] = e.target.value.split('/'); T.send(form('set-time-signature', +n, +d)); } },
        ['4/4', '3/4', '6/8', '7/8', '5/4'].map((v) =>
          el('option', { value: v, selected: v === `${song.numerator}/${song.denominator}` }, v))),
+    el('label', { class: 'loop-length', 'data-title': 'Loop length',
+                  'data-doc': 'How many bars the loop runs, from where it starts. It turns the loop on; the bracket in the ruler shows it.' },
+      el('span', { class: 'dim' }, 'Loop'),
+      el('input', { type: 'number', min: 1, max: 512, step: 1, 'data-ctl': 'loop-length',
+                    value: +((song.loopEnd - song.loopStart) / beatsPerBar()).toFixed(2),
+                    onchange: (e) => { if (+e.target.value > 0) setLoopBars(+e.target.value); } }),
+      el('span', { class: 'dim' }, 'bars')),
   );
 }
 
