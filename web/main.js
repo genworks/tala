@@ -421,9 +421,10 @@ T.sessionTest = async function sessionTest() {
   checks.grid = document.querySelectorAll('.slot').length === 2 * T.song.scenes.length
     && document.querySelectorAll('.slot.full').length === 3;
   // a performance: scene 0 at once, the drop launched mid-bar so it
-  // waits for the bar, then everything back to the timeline
+  // waits for the bar, then everything back to the timeline while the
+  // Lead's looping note is held (beat 8.125), so both sides release it
   const script = [[0, 'launch', 0, -1], [0, 'launch', 1, 0], [30000, 'launch', 0, 1], [30000, 'launch', 1, 1],
-                  [200000, 'arrange', -1]];
+                  [195000, 'arrange', -1]];
   const parity = await T.selfTest(48000 * 6, script);
   checks.parity = parity.ok;
   checks.parityHeard = parity.peak > 0.05;

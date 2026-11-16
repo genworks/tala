@@ -525,13 +525,15 @@ a parameter or a note must not add to it.")
           do (setf h (logand #xffffffff (* 16777619 (logxor h (logand #xff (char-code c)))))))
     (format nil "~(~8,'0x~)" h)))
 
-(defstruct (engine (:constructor make-engine (frames tick init state-size param-size placed)))
-  "A compiled plan: FRAMES runs it, INIT seeds it, STATE-SIZE and
-PARAM-SIZE are its arrays' lengths, PLACED its layout."
-  frames tick init state-size param-size placed)
+(defstruct (engine (:constructor make-engine (frames tick init note-off state-size param-size placed)))
+  "A compiled plan: FRAMES runs it, INIT seeds it, NOTE-OFF releases a
+track's voices as the worklet's does, STATE-SIZE and PARAM-SIZE are its
+arrays' lengths, PLACED its layout."
+  frames tick init note-off state-size param-size placed)
 
 (defun lisp-lambda-form (forms)
-  "FORMS as one function that returns the engine's two entry points."
+  "FORMS as one function that returns the engine's entry points: frames,
+tick, init and note-off."
   (let ((buffer '(simple-array double-float (*))))
     (flet ((clause (name)
              (destructuring-bind (lambda-list . body) (cdr (assoc name forms))
@@ -541,6 +543,7 @@ PARAM-SIZE are its arrays' lengths, PLACED its layout."
                                         for type = (case v
                                                      ((s p sc ol orr) buffer)
                                                      (pool '(simple-array single-float (*)))
+                                                     (pitch 'double-float)
                                                      (t 'fixnum))
                                         collect `(type ,type ,v)))
                        ,@body))))
@@ -548,8 +551,9 @@ PARAM-SIZE are its arrays' lengths, PLACED its layout."
          (declare (optimize (speed 1) (safety 1) (debug 0) (compilation-speed 2)))
          (labels (,(clause 'engine-tick)
                   ,(clause 'engine-frames)
-                  ,(clause 'engine-init))
-           (list #'engine-frames #'engine-tick #'engine-init))))))
+                  ,(clause 'engine-init)
+                  ,(clause 'engine-note-off))
+           (list #'engine-frames #'engine-tick #'engine-init #'engine-note-off))))))
 
 (defun lisp-engine (plan sr)
   "The renderer for PLAN at SR, built when it is new."
@@ -560,9 +564,9 @@ PARAM-SIZE are its arrays' lengths, PLACED its layout."
             (when (>= (hash-table-count *lisp-engines*) *most-engines*)
               (clrhash *lisp-engines*))
             (incf (getf *builds* :lisp))
-            (destructuring-bind (frames tick init) (funcall (compile nil (lisp-lambda-form forms)))
+            (destructuring-bind (frames tick init note-off) (funcall (compile nil (lisp-lambda-form forms)))
               (setf (gethash key *lisp-engines*)
-                    (make-engine frames tick init state-size param-size placed))))))))
+                    (make-engine frames tick init note-off state-size param-size placed))))))))
 
 (defparameter *worklet-class*
   "class TalaEngine extends AudioWorkletProcessor {
@@ -774,19 +778,21 @@ used twice in a context: (values js processor-name)."
 (defparameter *empty-pool* (make-array 1 :element-type 'single-float :initial-element 0f0)
   "The pool of a song with no recorded sound.")
 
-(defun apply-script-event (s p placed event)
+(defun apply-script-event (s p engine event)
   "EVENT, (frame kind track row), done to S as the worklet's message of
 that kind would do it: :launch row ROW on track TRACK (-1 stops it), or
-:arrange track TRACK back to its arrangement (-1 every track)."
+:arrange track TRACK back to its arrangement (-1 every track), its
+voices released, as the worklet releases them."
   (destructuring-bind (frame kind track &optional row) event
     (declare (ignore frame))
-    (let ((tracks (tracks-of-kind placed :midi)))
+    (let ((tracks (tracks-of-kind (engine-placed engine) :midi)))
       (ecase kind
         (:launch (session-queue s p (getf (nth track tracks) :state) (float row 1d0)))
         (:arrange (loop for placed-track in tracks
                         for i from 0
                         when (or (< track 0) (= track i))
-                          do (session-arrange s (getf placed-track :state))))))))
+                          do (session-arrange s (getf placed-track :state))
+                             (funcall (engine-note-off engine) s i -1d0)))))))
 
 (defun render-plan (plan params score frames &key (sr 48000) (from 0d0) (block-size frames)
                                                   (pool *empty-pool*) script)
@@ -812,7 +818,7 @@ frames do not depend on how they are asked for."
                 (done 0))
             (loop while (< done frames)
                   do (loop while (and events (<= (first (first events)) done))
-                           do (apply-script-event s p (engine-placed engine) (pop events)))
+                           do (apply-script-event s p engine (pop events)))
                      (let* ((stop (min frames (+ done block-size)
                                        (if events (max (1+ done) (first (first events))) frames)))
                             (n (- stop done))

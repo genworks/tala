@@ -16,11 +16,14 @@ what a style calls for is worked out each time.
 In a Gendl image:
 
 ```lisp
-(load "/projects/gw/tala/dev.lisp")
-(tala:configure-agent! :messages-url "http://transporter-room/llm/messages")
+(load "/path/to/tala/dev.lisp")
+(tala:configure-agent! :messages-url "https://models.example/v1/messages"
+                       :api-key-file "~/.config/tala/api-key")
 ```
 
-then browse `/tala/` on that image's HTTP port.  The audio engine is an
+then browse `/tala/` on that image's HTTP port.  The prompt talks to a
+server that answers the Messages API; leave out `:api-key-file` when a
+gateway in front of that server holds the key.  The audio engine is an
 AudioWorklet, which browsers offer only in a secure context, so use
 `localhost` or `https`.
 
@@ -101,8 +104,13 @@ with.  A JavaScript number and a double-float are the same IEEE double,
 and everything is built from `+ - * /` and `floor`, which IEEE defines
 exactly (`source/math.lisp` has its own sine, tangent and exponential
 for that reason).  So the two agree **to the last bit**, not to a
-tolerance: `tests/browser.sh` compares every sample.  Nothing allocates
-on the audio thread, and Lisp is never on it.
+tolerance: `tests/browser.sh` compares every sample.  The generated
+program is written to allocate nothing: it works in the typed arrays it
+is handed, in forms Parenscript prints without a closure
+(`source/dual.lisp`).  The worklet around it does allocate, a little:
+about every 32 ms it posts the page a report of the meters and the
+session's state, and it posts MIDI notes, clock ticks and recorded input
+as they come.  Lisp is never on the audio thread.
 
 **Recorded sound is data too.**  The browser decodes a file once, at
 the engine's rate, and sends the samples to the server, which keeps them
@@ -126,7 +134,8 @@ on the next boundary of the launch quantize by a clock that never jumps
 back with the arrangement's loop.  Session clips are rows of the score
 like any other, so the grid, too, rebuilds nothing.  The Lisp renderer
 and the worklet both take a script of launches at given frames, which is
-how a performance is held to the same frames on both sides.
+how a performance is held to the same frames on both sides; going back
+to the arrangement releases what a track was holding, on both.
 
 **Undo takes back one edit, not the song.**  The person and the
 prompt's model can edit at once, so an undo entry records the edit, the

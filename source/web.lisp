@@ -462,17 +462,34 @@ and two bars for the tails to ring out."
     (multiple-value-bind (left right) (render-song song (song-frames song))
       (wav-octets left right *sample-rate*))))
 
+(defparameter *most-render-seconds* 60
+  "The longest stretch the render door answers: the parity tests ask for
+ten seconds at most.  Each frame costs the server two doubles and a float.")
+
+(defun script-kind (text)
+  "A script event's kind, from the request's TEXT: one of the two the
+render knows, compared as text, so a request adds no symbol."
+  (cond ((equal text "launch") :launch)
+        ((equal text "arrange") :arrange)
+        (t (error "A script event is launch or arrange, not ~s."
+                  (if (stringp text) (subseq text 0 (min 40 (length text))) text)))))
+
 (defun handle-render (req)
   "GET ?frames=N&from=BEAT: float32 frames, for the browser's parity test."
   (let* ((session (request-session req))
-         (frames (parse-integer (net.aserve:request-query-value "frames" req)))
+         (frames (let ((n (parse-integer (or (net.aserve:request-query-value "frames" req) "")
+                                         :junk-allowed t))
+                       (most (* *most-render-seconds* *sample-rate*)))
+                   (if (and n (<= 1 n most))
+                       n
+                       (error "Ask for 1 to ~d frames." most))))
          (from (let ((text (net.aserve:request-query-value "from" req)))
                  (if text (parse-integer text) 0)))
          (song (session-song session))
          (script (let ((text (net.aserve:request-query-value "script" req)))
                    (and text
                         (map 'list (lambda (e)
-                                     (list (elt e 0) (intern (string-upcase (elt e 1)) :keyword)
+                                     (list (elt e 0) (script-kind (elt e 1))
                                            (elt e 2) (if (> (length e) 3) (elt e 3) 0)))
                              (yason:parse text))))))
     (multiple-value-bind (left right)

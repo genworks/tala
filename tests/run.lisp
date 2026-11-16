@@ -124,10 +124,13 @@ of each sample as a float32, mixed."
     (check "an empty song has only the master" (= 1 (length (the-object song plan))))
     (check "add-track" (forms-pass? song "(add-track \"Bass\" :values (:cutoff 800))"))
     (check "a control equal to its default is not stored"
-      (progn
-        (forms-pass? song "(set-device \"Bass\" :instrument :resonance 0.2)")
-        (null (getf (getf (first (getf (the-object song spec) :tracks)) :instrument) :values))
-        t))
+      (flet ((values-now ()
+               (getf (getf (first (getf (the-object song spec) :tracks)) :instrument) :values)))
+        (forms-pass? song "(set-device \"Bass\" :instrument :resonance 0.5)")
+        (let ((set (getf (values-now) :resonance)))
+          (forms-pass? song "(set-device \"Bass\" :instrument :resonance 0.2)")
+          (and set (= set 0.5)
+               (equal (values-now) '(:cutoff 800))))))
     (check "a value past the range is held at the end"
       (progn
         (forms-pass? song "(set-device 0 :instrument :cutoff 99999)")
@@ -728,6 +731,11 @@ and FORMS run on it."
                               "(add-clip \"A\" :scene 1 :length 8)")))
       (let ((left (render-song song (* 6 24000) :script '((0 :launch 0 0) (1000 :launch 0 1)))))
         (and (loud? left 50000 90000) (quiet? left 100000 (* 6 24000))))))
+  (check "back to the arrangement releases what the track was holding, as the worklet does"
+    (let ((song (launch-song "(set-device \"A\" :instrument :sustain 1 :release 0.01)"
+                              "(add-clip \"A\" :scene 0 :length 8 :notes ((60 0 8)))")))
+      (let ((left (render-song song (* 4 24000) :script '((0 :launch 0 0) (24000 :arrange -1)))))
+        (and (loud? left 2000 23000) (quiet? left 30000 (* 4 24000))))))
   (check "scenes, slots and launches leave the plan and the program alone"
     (let* ((song (launch-song))
            (plan (the-object song plan)))
@@ -1373,6 +1381,50 @@ logs through *door-around*."
             (ignore-errors
              (uiop:delete-directory-tree (uiop:ensure-directory-pathname tree) :validate t))))))))
 
+(defun test-render-door ()
+  "The parity door over a real connection, on a server of its own: a
+frame count it will not render, and a script kind it does not know, are
+refused before anything is allocated or any symbol is made."
+  (let* ((port (free-port))
+         (server (net.aserve:start :port port :server :new :listeners 2 :host "127.0.0.1"))
+         (session (format nil "render-door-~d" (get-universal-time)))
+         (kind (format nil "nokind~36r" (random (expt 36 8))))
+         (gate (invite-gate:make-gate :name "Tala" :prefix "/tala" :cookie "tala_invite"))
+         (activity (visitor-log:make-visitor-log :reads (visitor-log:visitor-log-reads *activity*))))
+    (flet ((fetch (query)
+             (multiple-value-bind (body status)
+                 (glisp:http-request (format nil "http://127.0.0.1:~d/tala/api/render.f32?s=~a&~a"
+                                             port session query))
+               (list status body)))
+           (encoded (text)
+             (format nil "~{%~2,'0x~}" (map 'list #'char-code text))))
+      (unwind-protect
+           (progn
+             (let ((*door-around* (lambda (thunk)
+                                    (let ((*gate* gate) (*activity* activity))
+                                      (funcall thunk)))))
+               (publish-door server "/tala/api/render.f32" "application/octet-stream" #'handle-render))
+             (check "the render door answers a short render, and a script of the kinds it knows"
+               (and (eql 200 (first (fetch "frames=480")))
+                    (eql 200 (first (fetch (format nil "frames=480&script=~a"
+                                                   (encoded "[[100,\"arrange\",-1]]")))))))
+             (check "more frames than the bound, none, fewer than none or no number are refused"
+               (every (lambda (query)
+                        (let ((answer (fetch query)))
+                          (and (eql 500 (first answer)) (search "frames" (second answer)))))
+                      (list (format nil "frames=~d" (1+ (* *most-render-seconds* *sample-rate*)))
+                            "frames=0" "frames=-5" "frames=many" "from=0")))
+             (check "a script kind it does not know is refused, and makes no symbol"
+               (let ((answer (fetch (format nil "frames=480&script=~a"
+                                            (encoded (format nil "[[0,~s,-1]]" kind))))))
+                 (and (eql 500 (first answer))
+                      (search "launch or arrange" (second answer))
+                      (null (find-symbol (string-upcase kind) :keyword))))))
+        (net.aserve:shutdown :server server)
+        (bt:with-lock-held (*sessions-lock*)
+          (remhash session *sessions*)
+          (remhash session *session-touched*))))))
+
 (defun run-tests ()
   "Every check: (values failed-names count)."
   (setf *checks* nil)
@@ -1398,6 +1450,7 @@ logs through *door-around*."
   (test-reading-reaches-the-model)
   (test-undo-with-two-editors)
   (test-admin)
+  (test-render-door)
   (test-golden)
   (let ((failed (remove-if #'cdr *checks*)))
     (values (reverse (mapcar #'car failed)) (length *checks*))))
